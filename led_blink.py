@@ -15,7 +15,7 @@ MQTT_USER = "abc"
 MQTT_PASS = "xyz"
 
 GPIO.setmode(GPIO.BCM)
-LED1_PIN=4
+LED1_PIN=3
 LED2_PIN=27
 GPIO.setup(LED1_PIN, GPIO.OUT)
 GPIO.setup(LED2_PIN, GPIO.OUT)
@@ -61,15 +61,15 @@ def publish(status1, status2):
         except:
             print(f"GUI THAT BAI, LUU: {msg}")
             is_connected = False
-    else:
-        print(f"MAT KET NOI, LUU: {msg}")
+        else:
+            print(f"MAT KET NOI, LUU: {msg}")
 def manual_control():
     while True:
         if not blink_mode:
-            GPIO.output(LED1_PIN, GPIO.HIGH if state else GPIO.LOW)
-            GPIO.output(LED2_PIN, GPIO.HIGH if state else GPIO.LOW)
-            publish("ON" if state else "OFF", "ON" if state else "OFF")
-            time.sleep(sleep_manual)
+            GPIO.output(LED1_PIN, GPIO.HIGH if led1_on else GPIO.LOW)
+            GPIO.output(LED2_PIN, GPIO.HIGH if led2_on else GPIO.LOW)
+            publish("ON" if led1_on else "OFF", "ON" if led2_on else "OFF")
+        time.sleep(sleep_manual)
 threading.Thread(target=manual_control, daemon=True).start()
         
 def blink_launcher():
@@ -77,9 +77,10 @@ def blink_launcher():
     state = True
     while True:
         if blink_mode:
-            GPIO.output(LED1_PIN, GPIO.HIGH if led1_on else GPIO.LOW)
-            GPIO.output(LED2_PIN, GPIO.LOW if led2_on else GPIO.HIGH)
-            publish("ON" if led1_on else "OFF", "OFF" if led2_on else "ON")    
+            GPIO.output(LED1_PIN, GPIO.HIGH if state else GPIO.LOW)
+            GPIO.output(LED2_PIN, GPIO.LOW if state else GPIO.HIGH)
+            publish("ON" if state else "OFF", "OFF" if state else "ON")    
+            state = not state
             time.sleep(sleep_blink)
         else: 
             time.sleep(0.1)
