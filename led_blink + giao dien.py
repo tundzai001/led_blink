@@ -108,7 +108,7 @@ def on_message(client, userdata, msg):
         value = float(data.get("value", 0))
         ts = float(data.get("timestamp", 0))
         status = "VUOT MUC CANH BAO" if value > threshold else "AN TOAN"
-        time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+        time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d%m%y")
 
         sensor_data.append((name, value, status, time_str))
         update_table((name, value, status, time_str))
@@ -259,6 +259,20 @@ def manual_only(action):
         action()
     else:
         messagebox.showinfo("CANH BAO", "BAN DANG O CHE DO TU DONG. HAY CHUYEN VE CHE DO THU CONG (OFF) DE DIEU KHIEN LED.")
+
+def clear_table():
+    for row in tree.get_children():
+        tree.delete(row)
+    sensor_data.clear()
+
+def check_and_clear_table():
+    now = datetime.now()
+    if now.hour == 0 and now.minute == 0:
+        clear_table()
+        print(" Da xoa bang du lieu luc 00:00")
+
+    root.after(60000, check_and_clear_table)
+check_and_clear_table()
 
 manual = tk.Frame(right_frame)
 manual.pack(pady=10)
