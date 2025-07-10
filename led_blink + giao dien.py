@@ -1,7 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import sys
-sys.path.append("/home/nam/.local/lib/python3.11/site-packages")
 import paho.mqtt.client as mqtt
 import json
 from datetime import datetime
@@ -9,91 +7,134 @@ import csv
 import RPi.GPIO as GPIO
 import threading
 import time
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# MQTT config
-MQTT_BROKER = "aitogy.xyz"
-MQTT_PORT = 1883
-MQTT_USER = "abc"
-MQTT_PASS = "xyz"
-MQTT_TOPIC_PUB = "led_data"
-
-# GPIO config
+# GPIO setup
 LED1_PIN = 3
 LED2_PIN = 27
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 GPIO.setup(LED1_PIN, GPIO.OUT)
 GPIO.setup(LED2_PIN, GPIO.OUT)
 
-# Global variables
+# Globals
 threshold = 1.3
 sensor_data = []
 listening = False
-led1_on = False
-led2_on = False
 blink_mode = False
 stop_event = threading.Event()
-connection_status = True
 current_topics = []
-blinking_pins = set()
-# MQTT client
+
 client = mqtt.Client(protocol=mqtt.MQTTv311)
-client.username_pw_set(MQTT_USER, MQTT_PASS)
+client.username_pw_set("abc", "xyz")
 
-# GUI root
+# ==== Flash LED ====
+def flash_led(pin, duration=0.3):
+    GPIO.output(pin, GPIO.HIGH)
+    time.sleep(duration)
+    GPIO.output(pin, GPIO.LOW)
+
+# ==== GUI ====
 root = tk.Tk()
-root.title("Giao dien cam bien + Dieu khien LED")
+root.title("Giao diện Cảm biến & Điều khiển LED")
+root.geometry("800x480")
+main = tk.Frame(root, padx=10, pady=10)
+main.pack(fill="both", expand=True)
 
-# Main layout
-main_frame = tk.Frame(root)
-main_frame.pack(fill="both", expand=True)
+style = ttk.Style()
+style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
+style.configure("Treeview", rowheight=24, font=("Arial", 10))
 
-# ==== LEFT SIDE: TOPIC INPUT ====
-left_frame = tk.Frame(main_frame)
-left_frame.grid(row=0, column=0, sticky="n")
+# ==== LEFT PANEL ====
+left = tk.LabelFrame(main, text="Cài đặt MQTT", padx=10, pady=10)
+left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
 
-tk.Label(left_frame, text="Nhap topic MQTT\n(1 topic moi dong):").pack(anchor="w", padx=5, pady=(5,0))
-topic_input = tk.Text(left_frame, height=15, width=30)
-topic_input.pack(padx=5, pady=5)
+def add_labeled_entry(frame, label, row, default="", width=14, show=None):
+    tk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
+    entry = tk.Entry(frame, width=width, show=show)
+    entry.insert(0, default)
+    entry.grid(row=row, column=1, sticky="w", pady=2)
+    return entry
 
-def update_topics():
+broker_entry = add_labeled_entry(left, "MQTT Broker:", 0, "aitogy.xyz")
+port_entry = add_labeled_entry(left, "Port:", 1, "1883")
+user_entry = add_labeled_entry(left, "Username:", 2, "abc")
+pass_entry = add_labeled_entry(left, "Password:", 3, "xyz", show="*")
+pub_entry   = add_labeled_entry(left, "Publish Topic:", 4, "led_data",)
+threshold_entry = add_labeled_entry(left, "Ngưỡng cảnh báo:", 5, str(threshold))
+
+def toggle_pass():
+    if pass_entry.cget("show") == "":
+        pass_entry.config(show="*")
+        show_btn.config(text="👁")
+    else:
+        pass_entry.config(show="")
+        show_btn.config(text="🙈")
+
+show_btn = tk.Button(left, text="👁", command=toggle_pass, width=2)
+show_btn.grid(row=3, column=2, sticky="w")
+
+tk.Label(left, text="Subscribe Topics (1 dòng mỗi topic):").grid(row=6, column=0, columnspan=2, sticky="w")
+topic_input = tk.Text(left, width=22, height=6)
+topic_input.grid(row=8, column=0, columnspan=3, pady=(0,5))
+
+def update_mqtt():
     global current_topics
-    new_topics = topic_input.get("1.0", "end").strip().splitlines()
+    try:
+        client.loop_stop()
+        client.disconnect()
+    except: 
+        pass
+
+    broker = broker_entry.get().strip()
+    port_text = port_entry.get().strip()
+    pwd = pass_entry.get().strip()
+    user = user_entry.get().strip()
+    topics = topic_input.get("1.0", "end").strip().splitlines()
+
+    if not broker:
+        messagebox.showerror("MQTT Error", "Vui lòng nhập địa chỉ MQTT Broker")
+        return
+    try:
+        port= int(port_text)               
+    except ValueError: 
+        messagebox.showerror("MQTT Error", "Port phải là số nguyên")
+        return
+    if not topics:
+        messagebox.showerror("MQTT Error", "Vui lòng nhập ít nhất một topic để subscribe")
+        return
+    client.username_pw_set(user, pwd)
+    try:
+        client.connect(broker, port=port, keepalive=60)
+        client.loop_start()
+    except Exception as e:
+        messagebox.showerror("MQTT Error", f"Lỗi kết nối:{e}")
+        return
     for t in current_topics:
         client.unsubscribe(t)
-    current_topics = new_topics
-    for t in current_topics:
+    current_topics = topics
+    for t in current_topics:    
         client.subscribe(t)
-    print("Dang lang nghe cac topic:", current_topics)
+    messagebox.showinfo("MQTT", "Đã cập nhật MQTT và topic")
 
-tk.Button(left_frame, text="Cap nhat Topic", command=update_topics).pack(padx=5, pady=(0,10))
+tk.Button(left, text="Cập nhật MQTT", command=update_mqtt, bg="#e0e0e0").grid(row=8, column=0, columnspan=3, pady=5)
 
-# ==== RIGHT SIDE ====
-right_frame = tk.Frame(main_frame)
-right_frame.grid(row=0, column=1, sticky="n")
+right = tk.Frame(main)
+# ==== RIGHT PANEL ====
+right.grid(row=0, column=1, sticky="nsew")
+right.grid_columnconfigure(0, weight=1)
 
-status_label = tk.Label(right_frame, text="Trang thai: THU CONG", fg="red")
+status_label = tk.Label(right, text="Trạng thái: THỦ CÔNG", fg="red", font=("Arial", 11, "bold"))
 status_label.pack(pady=5)
 
-warning_overlay = tk.Label(
-    right_frame,
-    text="? M?T K?T N?I MQTT ?",
-    font=("Arial", 24, "bold"),
-    fg="white",
-    bg="red",
-    padx=20,
-    pady=20
-)
-warning_overlay.place(relx=0.5, rely=0.5, anchor="center")
-warning_overlay.lower()
-
-# Data table
-tree = ttk.Treeview(right_frame, columns=("Ten", "Gia tri", "Trang thai", "Thoi gian"), show="headings")
+tree = ttk.Treeview(right, columns=("Tên", "Giá trị", "Trạng thái", "Thời gian"), show="headings", height=10)
 for col in tree["columns"]:
     tree.heading(col, text=col)
-tree.pack(padx=10, pady=10, fill="both", expand=True)
+tree.pack(padx=5, pady=5, fill="x")
 
 def update_table(record):
-    color = "red" if record[2] == "VUOT MUC CANH BAO" else "green"
+    color = "red" if record[2] == "VUOT MUC" else "green"
     tree.insert("", "end", values=record, tags=(color,))
     tree.tag_configure("red", background="#FFCCCC")
     tree.tag_configure("green", background="#CCFFCC")
@@ -103,190 +144,108 @@ def on_message(client, userdata, msg):
     if not listening:
         return
     try:
-        data = json.loads(msg.payload.decode('utf-8'))
+        data = json.loads(msg.payload.decode())
         name = data.get("sensorname", msg.topic)
         value = float(data.get("value", 0))
-        ts = float(data.get("timestamp", 0))
-        status = "VUOT MUC CANH BAO" if value > threshold else "AN TOAN"
-        time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d%m%y")
+        ts = float(data.get("timestamp", time.time()))
+        threshold = float(threshold_entry.get())
+        status = "VUOT MUC" if value > threshold else "AN TOAN"
+        time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d-%m")
 
         sensor_data.append((name, value, status, time_str))
         update_table((name, value, status, time_str))
 
-        def flash_led(pin):
-            GPIO.output(pin, GPIO.HIGH)
-            time.sleep(0.2)
-            GPIO.output(pin, GPIO.LOW)
-
-        threading.Thread(target=flash_led, args=(LED1_PIN,)).start()
+        threading.Thread(target=flash_led, args=(LED1_PIN,), daemon=True).start()
         if value > threshold:
-            threading.Thread(target=flash_led, args=(LED2_PIN,)).start()
+            threading.Thread(target=flash_led, args=(LED2_PIN,), daemon=True).start()
 
-        msg_send = f"({value} {status} ,{int(ts)})"
-        client.publish(MQTT_TOPIC_PUB, msg_send)
+        client.publish(pub_entry.get().strip(), f"({value}, {status}, {int(ts)})")
     except Exception as e:
-        print("Loi khi nhan tin MQTT:", e)
+        print("MQTT error:", e)
+
+client.on_message = on_message
+def on_disconnect(client, userdata, rc):
+    if rc != 0:
+        print("Mất kết nối MQTT, đang thử kết nối lại...")
+        while not stop_event.is_set():
+            try:
+                time.sleep(5)
+                client.reconnect()
+                print("Đã kết nối lại MQTT")
+                break
+            except:
+                print("Thử lại kết nối MQTT...")
+                continue
+
+client.on_disconnect = on_disconnect
 
 def toggle_on():
-    global listening, blink_mode, blinking_pins
-    print("DA NHAN NUT ON")
+    global listening
     listening = True
-    blink_mode = False
-    blinking_pins.clear()
-    GPIO.output(LED1_PIN, GPIO.LOW)
-    GPIO.output(LED2_PIN, GPIO.LOW)
     for t in current_topics:
         client.subscribe(t)
-    if client.is_connected():
-        print("MQTT DANG KET NOI")
-        warning_overlay.lower()
-        status_label.config(text="Trang thai: TU DONG", fg="green")
-    else:
-        print("MQTT CHUA KET NOI")
-        warning_overlay.lift()
-        status_label.config(text="Trang thai: MAT KET NOI MQTT", fg="dark red")
+    status_label.config(text="Trạng thái: TỰ ĐỘNG", fg="green")
 
 def toggle_off():
     global listening
     listening = False
     for t in current_topics:
         client.unsubscribe(t)
-    status_label.config(text="Trang thai: THU CONG", fg="red")
-
-def set_threshold():
-    global threshold
-    try:
-        threshold = float(threshold_entry.get())
-    except:
-        pass
-
-def clear_table():
-    for row in tree.get_children():
-        tree.delete(row)
-    sensor_data.clear()
-
-def save_to_csv():
-    if not sensor_data:
-        return
-    file_path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
-    if file_path:
-        with open(file_path, mode="w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Ten", "Gia tri", "Trang thai", "Thoi gian"])
-            for record in sensor_data:
-                writer.writerow(record)
-
-def exit_program():
-    if messagebox.askokcancel("Xac nhan", "Ban co muon thoat chuong trinh?"):
-        stop_event.set()
-        GPIO.cleanup()
-        client.disconnect()
-        root.destroy()
+    status_label.config(text="Trạng thái: THỦ CÔNG", fg="red")
 
 def toggle_led(pin):
-    global led1_on, led2_on, blink_mode
-    if pin == LED1_PIN:
-        led1_on = not led1_on
-        GPIO.output(LED1_PIN, GPIO.HIGH if led1_on else GPIO.LOW)
-    elif pin == LED2_PIN:
-        led2_on = not led2_on
-        GPIO.output(LED2_PIN, GPIO.HIGH if led2_on else GPIO.LOW)
-    if blink_mode and not led1_on and not led2_on:
-        blink_mode = False
-
-def toggle_blink():
-    global blink_mode, led1_on, led2_on
-    if not blink_mode:
-        if not led1_on:
-            led1_on = True
-            GPIO.output(LED1_PIN, GPIO.HIGH)
-        if not led2_on:
-            led2_on = True
-            GPIO.output(LED2_PIN, GPIO.HIGH)
-        blink_mode = True
-    else:
-        blink_mode = False
-        led1_on = led2_on = False
-        GPIO.output(LED1_PIN, GPIO.LOW)
-        GPIO.output(LED2_PIN, GPIO.LOW)
+    GPIO.output(pin, not GPIO.input(pin))
 
 def blink_loop():
     state = True
     while not stop_event.is_set():
         if blink_mode:
-            if led1_on:
-                GPIO.output(LED1_PIN, GPIO.HIGH if state else GPIO.LOW)
-            if led2_on:
-                GPIO.output(LED2_PIN, GPIO.HIGH if state else GPIO.LOW)
-        state = not state
+            GPIO.output(LED1_PIN, state)
+            GPIO.output(LED2_PIN, state)
+            state = not state
         time.sleep(0.5)
 
+def toggle_blink():
+    global blink_mode
+    blink_mode = not blink_mode
+    if not blink_mode:
+        GPIO.output(LED1_PIN, GPIO.LOW)
+        GPIO.output(LED2_PIN, GPIO.LOW)
+
+def save_to_csv():
+    if not sensor_data: return
+    path = filedialog.asksaveasfilename(defaultextension=".csv")
+    if path:
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Tên", "Giá trị", "Trạng thái", "Thời gian"])
+            writer.writerows(sensor_data)
+
+def exit_program():
+    if messagebox.askokcancel("Xác nhận", "Bạn có muốn thoát chương trình?"):
+        stop_event.set()
+        try:
+            client.loop_stop()
+            client.disconnect()
+        except: pass
+        GPIO.cleanup()
+        root.destroy()
+
+# ==== Control Buttons ====
+ctrl = tk.Frame(right)
+ctrl.pack(pady=5)
+tk.Button(ctrl, text="Tự động (ON)", command=toggle_on, bg="#CCFFCC").grid(row=0, column=0, padx=3)
+tk.Button(ctrl, text="Thủ công (OFF)", command=toggle_off, bg="#FFCCCC").grid(row=0, column=1, padx=3)
+tk.Button(ctrl, text="Lưu CSV", command=save_to_csv).grid(row=0, column=2, padx=3)
+tk.Button(ctrl, text="Thoát", command=exit_program, bg="gray").grid(row=0, column=3, padx=3)
+
+led_panel = tk.LabelFrame(right, text="LED Thủ công")
+led_panel.pack(pady=5)
+tk.Button(led_panel, text="LED1", width=10, command=lambda: toggle_led(LED1_PIN)).grid(row=0, column=0, padx=5, pady=5)
+tk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN)).grid(row=0, column=1, padx=5, pady=5)
+tk.Button(led_panel, text="BLINK", width=10, command=toggle_blink).grid(row=0, column=2, padx=5, pady=5)
+
+# ==== Run ====
 threading.Thread(target=blink_loop, daemon=True).start()
-
-def monitor_connection():
-    global connection_status
-    while not stop_event.is_set():
-        connected = client.is_connected()
-        if not connected and connection_status:
-            connection_status = False
-            status_label.config(text="Trang thai: MAT KET NOI MQTT", fg="dark red")
-            warning_overlay.lift()
-        elif connected and not connection_status:
-            connection_status = True
-            status_label.config(
-                text="Trang thai: TU DONG" if listening else "Trang thai: THU CONG",
-                fg="green" if listening else "red"
-            )
-            warning_overlay.lower()
-        time.sleep(3)
-
-# GUI Controls
-frame = tk.Frame(right_frame)
-frame.pack(pady=5)
-
-threshold_entry = tk.Entry(frame, width=10)
-threshold_entry.insert(0, str(threshold))
-threshold_entry.grid(row=0, column=1)
-tk.Label(frame, text="Nguong hien tai:").grid(row=0, column=0)
-tk.Button(frame, text="Cap nhat", command=set_threshold).grid(row=0, column=2, padx=5)
-tk.Button(frame, text="Xoa bang", command=clear_table).grid(row=0, column=3, padx=5)
-tk.Button(frame, text="Luu CSV", command=save_to_csv).grid(row=0, column=4, padx=5)
-tk.Button(frame, text="ON (tu dong)", bg="#CCFFCC", command=toggle_on).grid(row=0, column=5, padx=5)
-tk.Button(frame, text="OFF (thu cong)", bg="#FFCCCC", command=toggle_off).grid(row=0, column=6, padx=5)
-tk.Button(frame, text="EXIT", bg="gray", command=exit_program).grid(row=0, column=7, padx=5)
-def manual_only(action):
-    if not listening:
-        action()
-    else:
-        messagebox.showinfo("CANH BAO", "BAN DANG O CHE DO TU DONG. HAY CHUYEN VE CHE DO THU CONG (OFF) DE DIEU KHIEN LED.")
-
-def clear_table():
-    for row in tree.get_children():
-        tree.delete(row)
-    sensor_data.clear()
-
-def check_and_clear_table():
-    now = datetime.now()
-    if now.hour == 0 and now.minute == 0:
-        clear_table()
-        print(" Da xoa bang du lieu luc 00:00")
-
-    root.after(60000, check_and_clear_table)
-check_and_clear_table()
-
-manual = tk.Frame(right_frame)
-manual.pack(pady=10)
-tk.Label(manual, text="Dieu khien LED thu cong:").grid(row=0, column=0, columnspan=3, pady=(0,5))
-tk.Button(manual, text="LED1", command=lambda: manual_only(lambda: toggle_led(LED1_PIN))).grid(row=1, column=0, padx=10)
-tk.Button(manual, text="LED2", command=lambda: manual_only(lambda: toggle_led(LED2_PIN))).grid(row=1, column=1, padx=10)
-tk.Button(manual, text="BLINK", command=lambda: manual_only(toggle_blink)).grid(row=1, column=2, padx=10)
-
-# MQTT setup and loop
-client.on_message = on_message
-client.connect(MQTT_BROKER, MQTT_PORT, 60)
-client.loop_start()
-threading.Thread(target=monitor_connection, daemon=True).start()
-
-# Exit protocol
 root.protocol("WM_DELETE_WINDOW", exit_program)
 root.mainloop()
