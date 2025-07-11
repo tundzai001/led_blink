@@ -37,12 +37,9 @@ current_topics = []
 
 # ==== Flash LED ====
 def flash_led(pin, duration=0.3):
-    """Hàm nháy LED một lần trong một khoảng thời gian ngắn."""
     try:
-        # print(f"Flashing LED on pin {pin} HIGH") # Dùng để gỡ lỗi
         GPIO.output(pin, GPIO.HIGH)
         time.sleep(duration)
-        # print(f"Flashing LED on pin {pin} LOW") # Dùng để gỡ lỗi
         GPIO.output(pin, GPIO.LOW)
     except Exception as e:
         print(f"Error flashing LED on pin {pin}: {e}")
@@ -62,9 +59,9 @@ style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
 style.configure("Treeview", rowheight=24, font=("Arial", 10))
 
 # ==== LEFT PANEL ====
-left = ttk.LabelFrame(main, text="Cài đặt MQTT")
+left = ttk.LabelFrame(main, text="Cài đặt MQTT & Ngưỡng")
 left.grid(row=0, column=0, sticky="nsw", padx=(0, 15), pady=10)
-
+left.grid_rowconfigure(8, weight=1) 
 def add_labeled_entry(frame, label, row, default="", width=14, show=None):
     ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
     entry = ttk.Entry(frame, width=width, show=show)
@@ -80,7 +77,7 @@ pass_entry = add_labeled_entry(left, "Password:", 3, "xyz", show="*")
 pub_entry   = add_labeled_entry(left, "Publish Topic:", 4, "",)
 threshold_entry = add_labeled_entry(left, "Ngưỡng cảnh báo:", 5, str(threshold))
 
-def save_config():
+def save_config_apply():
     config = configparser.ConfigParser()
     config['MQTT'] = {
         'broker': broker_entry.get(),
@@ -95,8 +92,8 @@ def save_config():
     }
     with open('config.ini', 'w') as f:
         config.write(f)
-    messagebox.showinfo("Lưu cấu hình", "Đã lưu cấu hình MQTT và ngưỡng")
-
+    messagebox.showinfo("Lưu cấu hình", "Đã lưu cấu hình thành công")
+    if listening: update_mqtt()
 def load_config():
     config = configparser.ConfigParser()
     config.read('config.ini')
@@ -122,7 +119,7 @@ def load_config():
         threshold_entry.delete(0, tk.END)
         threshold_entry.insert(0, config["Settings"]["threshold"])
     print("Đã tải cấu hình.")
-ttk.Button(left, text="Lưu cấu hình", command=save_config).grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
+
 def load_threshold():
     config = configparser.ConfigParser()
     config.read('config.ini')
@@ -136,27 +133,22 @@ def toggle_pass():
     else:
         pass_entry.config(show="")
         show_btn.config(text="🙈")
-
 show_btn = ttk.Button(left, text="👁", command=toggle_pass, width=2)
 show_btn.grid(row=3, column=2, sticky="w")
-
 ttk.Label(left, text="Subscribe Topics (1 dòng mỗi topic):").grid(row=7, column=0, columnspan=2, sticky="w")
 topic_input = tk.Text(left, width=22, height=6)
-topic_input.grid(row=8, column=0, columnspan=3, pady=(0,5))
+topic_input.grid(row=8, column=0, columnspan=3, pady=(0,5), sticky="nsew")
+ttk.Button(left, text="Lưu cấu hình", command=save_config_apply, bootstyle="primary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=5)
 # ==== SỬA ĐỔI CHÍNH Ở ĐÂY ====
-
+exiting = False
 def on_connect(client, userdata, flags, rc):
-    """Callback khi kết nối MQTT thành công."""
     if rc == 0:
         print("MQTT Connected successfully.")
-        # Sau khi kết nối thành công, mới bắt đầu subscribe và bật chế độ tự động
         global current_topics
         topics_to_subscribe = topic_input.get("1.0", "end").strip().splitlines()
         if not topics_to_subscribe:
             print("No topics to subscribe to.")
             return
-            
-        # Unsubscribe khỏi các topic cũ trước khi subscribe topic mới
         if current_topics:
             for t in current_topics:
                 client.unsubscribe(t)
@@ -165,48 +157,54 @@ def on_connect(client, userdata, flags, rc):
         for t in current_topics:
             client.subscribe(t)
             print(f"Subscribed to topic: {t}")
-        
-        # Bật chế độ tự động nếu người dùng đã nhấn nút "Tự động"
         if listening:
             status_label.config(text="Trạng thái: TỰ ĐỘNG", foreground="green")
             messagebox.showinfo("MQTT", "Đã kết nối và bắt đầu chế độ tự động.")
     else:
-        print(f"Failed to connect, return code {rc}\n")
+        print(f"Failed to connect, return code {rc}\n"); status_label.config(text="Trạng thái: LỖI KẾT NỐI", foreground="red")
         messagebox.showerror("MQTT Error", f"Không thể kết nối MQTT, mã lỗi: {rc}")
 
 def update_mqtt():
-    """Cập nhật thông tin và kết nối lại MQTT."""
+    global exiting
+    if exiting:
+        return
+    print("Stopping existing MQTT client...")
+    try: 
+        client.loop_stop
+        client.disconnect()
+        print("MQTT client stopped and disconnected.")
+    except Exception as e:
+         print(f"Info: Error while stopping old client (might be normal): {e}")
+
     broker = broker_entry.get().strip()
     port_text = port_entry.get().strip()
     pwd = pass_entry.get().strip()
     user = user_entry.get().strip()
+    
+    if listening: status_label.config(text="Trạng thái: ĐANG KẾT NỐI...", foreground="orange")
 
     if not broker:
         messagebox.showerror("MQTT Error", "Vui lòng nhập địa chỉ MQTT Broker")
+        toggle_off()
         return
     try:
         port = int(port_text)
     except ValueError:
-        messagebox.showerror("MQTT Error", "Port phải là số nguyên")
+        messagebox.showerror("Lỗi cấu hình", "Port phải là số nguyên."); toggle_off()
+        toggle_off()
         return
-
-    try:
-        client.loop_stop(force=True) # Dừng vòng lặp cũ
-    except:
-        pass
 
     client.username_pw_set(user, pwd)
     try:
-        print(f"Connecting to MQTT broker: {broker}:{port}...")
+        print(f"Đang kết nối tới MQTT broker: {broker}:{port}...")
         client.connect(broker, port=port, keepalive=60)
         client.loop_start() # Bắt đầu vòng lặp mới
     except Exception as e:
-        messagebox.showerror("MQTT Error", f"Lỗi kết nối: {e}")
+        messagebox.showerror("Lỗi kết nối MQTT", f"Không thể kết nối: {e}"); 
+        status_label.config(text="Trạng thái: MẤT KẾT NỐI", foreground="red")
 
-ttk.Button(left, text="Cập nhật MQTT", command=update_mqtt, bootstyle="secondary").grid(row=9, column=0, columnspan=2, pady=5, sticky="ew")
-
-right = ttk.Frame(main, borderwidth=1, relief="solid")
 # ==== RIGHT PANEL ====
+right = ttk.Frame(main, borderwidth=1, relief="solid")
 right.grid(row=0, column=1, sticky="nsew")
 right.grid_columnconfigure(0, weight=1)
 right.grid_rowconfigure(1, weight=1)
@@ -222,8 +220,7 @@ sheet = Sheet(sheet_frame,
               headers=["Tên", "Giá trị", "Trạng thái", "Thời gian"],
               show_row_index=False,
               column_widths=[150, 100, 100, 150],
-              )
-sheet.grid(row=0, column=0, sticky="nsew")
+)
 sheet.enable_bindings()
 sheet.set_options(
     font=("Arial", 10, "normal"),
@@ -234,10 +231,23 @@ sheet.set_options(
 )
 sheet.disable_bindings(["edit_cell", "arrowkeys", "drag_and_drop", "column_drag_and_drop", "rc_delete_row", "rc_insert_row", "rc_delete_column", "rc_insert_column"]) # Không chỉnh sửa
 sheet.set_options(grid_color="#cccccc", table_bg="#ffffff", index_bg="#eeeeee")
+sheet.grid(row=0, column=0, sticky="nsew")
+# SỬA ĐỔI: Hàm resize vẫn giữ nguyên...
+def resize_columns(event=None):
+    # Lấy chiều rộng từ widget cha (right frame)
+    width = right.winfo_width() - 15 # Trừ đi padx*2 và một chút lề
+    if width <= 1: return
+    ratios = [0.30, 0.20, 0.20, 0.30]
+    new_widths = [int(width * r) for r in ratios]
+    try:
+        sheet.column_widths(new_widths)
+    except: pass
+right.bind("<Configure>", resize_columns)
 
 def update_table(record):
     sheet.dehighlight_all()
-    sheet.set_sheet_data(sensor_data)
+    data_as_lists = [list(row) for row in sensor_data]
+    sheet.set_sheet_data(data_as_lists)
     new_row_index  = len(sensor_data) - 1
     if new_row_index >= 0:
         sheet.highlight_rows([new_row_index], bg='#D2EAF8')
@@ -246,7 +256,7 @@ def update_table(record):
 
 def clear_table():
     sensor_data.clear()
-    sheet.set_sheet_data([])
+    root.after(0, lambda: sheet.set_sheet_data([]))
     print("Đã xóa bảng dữ liệu lúc 00:00")
 
 def auto_clear_loop():
@@ -259,36 +269,22 @@ def auto_clear_loop():
 
 
 def on_message(client, userdata, msg):
-    """Callback khi nhận được tin nhắn MQTT."""
     if not listening:
         return
-    
-    print(f"Message received on topic '{msg.topic}': {msg.payload.decode()}") # Thêm để gỡ lỗi
-
     try:
         data = json.loads(msg.payload.decode())
         name = data.get("sensorname", msg.topic)
         value = float(data.get("value", 0))
         ts = float(data.get("timestamp", time.time()))
-        
-        # Lấy ngưỡng từ entry mỗi lần để đảm bảo nó được cập nhật
         current_threshold = float(threshold_entry.get())
-        
         status = "VUOT MUC" if value > current_threshold else "AN TOAN"
         time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d-%m")
-
         record = (name, value, status, time_str)
         sensor_data.append(record)
-        
-        # Cập nhật GUI từ luồng chính để đảm bảo an toàn luồng
         root.after(0, update_table, record)
-
-        # Chạy flash LED trong một luồng riêng để không chặn luồng MQTT
         threading.Thread(target=flash_led, args=(LED1_PIN,), daemon=True).start()
         if value > current_threshold:
             threading.Thread(target=flash_led, args=(LED2_PIN,), daemon=True).start()
-
-        # Publish dữ liệu trạng thái
         pub_topic = pub_entry.get().strip()
         if pub_topic:
             client.publish(pub_topic, f"({value}, {status}, {int(ts)})")
@@ -298,43 +294,45 @@ def on_message(client, userdata, msg):
     except ValueError:
         print(f"Error converting value to float from topic '{msg.topic}'")
     except Exception as e:
-        print(f"An error occurred in on_message: {e}")
+        print(f"Lỗi trong on_message: {e}")
 
 def on_disconnect(client, userdata, rc):
-    if rc != 0:
+    global exiting
+    if exiting:
+        return
+    if rc != 0 and listening:
         print("Mất kết nối MQTT, đang thử kết nối lại...")
-        # Không cần vòng lặp while ở đây, Paho MQTT có cơ chế tự động kết nối lại
-        # nếu bạn sử dụng client.reconnect()
         status_label.config(text="Trạng thái: MẤT KẾT NỐI", foreground="orange")
-
-
+    try:
+        time.sleep(2)
+        client.reconnect()
+        client.loop_start()
+        print("Đã thử reconnect MQTT.")
+    except Exception as e:
+            print(f"Reconnect thất bại: {e}")
 client = mqtt.Client(protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
 client.on_message = on_message
 client.on_disconnect = on_disconnect
 
 def toggle_on():
-    """Bật chế độ tự động."""
     global listening, blink_mode
     if blink_mode:
-        toggle_blink() # Tắt chế độ blink nếu đang bật
+        toggle_blink() 
 
     listening = True
-    # Việc subscribe sẽ được xử lý trong callback on_connect
-    # chỉ cần đảm bảo cờ `listening` là True
     status_label.config(text="Trạng thái: ĐANG KẾT NỐI...", foreground="orange")
-    update_mqtt() # Gọi hàm này để bắt đầu kết nối
+    update_mqtt() 
 
 def toggle_off():
-    """Tắt chế độ tự động (chuyển sang thủ công)."""
     global listening
     listening = False
-    
-    # Unsubscribe khỏi tất cả các topic
+    try: client.loop_stop(force=True)
+    except: pass
     if current_topics:
         for t in current_topics:
             client.unsubscribe(t)
-        print(f"Unsubscribed from topics: {current_topics}")
+        print(f"Đã hủy đăng ký các topics: {current_topics}")
     
     status_label.config(text="Trạng thái: THỦ CÔNG", foreground="red")
 
@@ -348,20 +346,18 @@ def toggle_led(pin):
         messagebox.showwarning("Cảnh báo", "Vui lòng tắt chế độ tự động trước khi điều khiển LED thủ công")
 
 def blink_loop():
-    """Vòng lặp nhấp nháy LED khi ở chế độ BLINK."""
     state = True
     while not stop_event.is_set():
-        if blink_mode and not listening: # Chỉ nháy khi ở chế độ blink và không ở chế độ tự động
+        if blink_mode and not listening:
             try:
                 GPIO.output(LED1_PIN, state)
                 GPIO.output(LED2_PIN, state)
                 state = not state
             except Exception as e:
-                print(f"Error in blink_loop: {e}")
+                print(f"Lỗi trong blink_loop: {e}")
         time.sleep(0.5)
 
 def toggle_blink():
-    """Bật/tắt chế độ nhấp nháy."""
     global blink_mode
     if listening:
         messagebox.showwarning("Cảnh báo", "Vui lòng tắt chế độ tự động trước khi bật BLINK")
@@ -378,20 +374,31 @@ def toggle_blink():
             print(f"Could not turn off LEDs: {e}")
         status_label.config(text="Trạng thái: THỦ CÔNG", foreground="red")
 
+def _write_csv_in_background(path, data_to_save):
+    try:
+        with open(path, "w", newline="", encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Tên", "Giá trị", "Trạng thái", "Thời gian"])
+            writer.writerows(data_to_save)
+        root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {path}"))
+    except Exception as e:
+        root.after(0, lambda: messagebox.showerror("Lỗi", f"Không thể lưu file: {e}"))
+    finally:
+        root.after(0, lambda: save_csv_button.config(state="normal"))
+
 def save_to_csv():
     if not sensor_data:
         messagebox.showinfo("Thông báo", "Không có dữ liệu để lưu.")
         return
     path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
     if path:
-        try:
-            with open(path, "w", newline="", encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(["Tên", "Giá trị", "Trạng thái", "Thời gian"])
-                writer.writerows(sensor_data)
-            messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {path}")
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể lưu file: {e}")
+        save_csv_button.config(state="disabled")
+        data_copy = list(sensor_data)
+        threading.Thread(
+            target=_write_csv_in_background, 
+            args=(path, data_copy), 
+            daemon=True
+        ).start()
 
 def auto_connect_and_start():
     """Tải cấu hình và bật chế độ tự động."""
@@ -400,10 +407,12 @@ def auto_connect_and_start():
 
 def exit_program():
     if messagebox.askokcancel("Xác nhận", "Bạn có muốn thoát chương trình?"):
+        global exiting
+        exiting = True
         if sensor_data and messagebox.askyesno("Lưu dữ liệu", "Bạn có muốn lưu bảng dữ liệu ra file CSV không?"):
             save_to_csv() # Gọi hàm lưu file TRƯỚC KHI hủy cửa sổ.
         print("Đang thoát chương trình...")
-        save_config()
+        save_config_apply()
         stop_event.set()
         try:
             client.loop_stop()
@@ -420,15 +429,18 @@ def exit_program():
 # ==== Control Buttons ====
 ctrl = ttk.Frame(right)
 ctrl.grid(row=2, column=0, pady=5, sticky="ew")
+ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
 right.grid_rowconfigure(2, weight=0)
 # Thay đổi command của nút "Tự động"
 ttk.Button(ctrl, text="Tự động (ON)", command=auto_connect_and_start, bootstyle="success").grid(row=0, column=0, padx=3)
 ttk.Button(ctrl, text="Thủ công (OFF)", command=toggle_off, bootstyle="danger").grid(row=0, column=1, padx=3)
-ttk.Button(ctrl, text="Lưu CSV", command=save_to_csv, bootstyle="info").grid(row=0, column=2, padx=3)
+save_csv_button = ttk.Button(ctrl, text="Lưu CSV", command=save_to_csv, bootstyle="info")
+save_csv_button.grid(row=0, column=2, padx=3)
 ttk.Button(ctrl, text="Thoát", command=exit_program, bootstyle="secondary").grid(row=0, column=3, padx=3)
 
 led_panel = ttk.LabelFrame(right, text="LED Thủ công")
 led_panel.grid(row=3, column=0, pady=5, sticky="ew")
+led_panel.grid_columnconfigure((0, 1, 2), weight=1)
 right.grid_rowconfigure(3, weight=0)
 ttk.Button(led_panel, text="LED1", width=10, command=lambda: toggle_led(LED1_PIN)).grid(row=0, column=0, padx=5, pady=5)
 ttk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN)).grid(row=0, column=1, padx=5, pady=5)
@@ -439,5 +451,7 @@ threading.Thread(target=blink_loop, daemon=True).start()
 threading.Thread(target=auto_clear_loop, daemon=True).start()
 root.protocol("WM_DELETE_WINDOW", exit_program)
 load_config() # Tải cấu hình khi khởi động
+update_table(None)
 root.mainloop()
+
 
