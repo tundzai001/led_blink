@@ -121,6 +121,7 @@ def load_config():
     if "Settings" in config and "threshold" in config["Settings"]:
         threshold_entry.delete(0, tk.END)
         threshold_entry.insert(0, config["Settings"]["threshold"])
+    print("Đã tải cấu hình.")
 ttk.Button(left, text="Lưu cấu hình", command=save_config).grid(row=6, column=0, columnspan=2, sticky="ew", pady=2)
 def load_threshold():
     config = configparser.ConfigParser()
@@ -399,17 +400,21 @@ def auto_connect_and_start():
 
 def exit_program():
     if messagebox.askokcancel("Xác nhận", "Bạn có muốn thoát chương trình?"):
+        if sensor_data and messagebox.askyesno("Lưu dữ liệu", "Bạn có muốn lưu bảng dữ liệu ra file CSV không?"):
+            save_to_csv() # Gọi hàm lưu file TRƯỚC KHI hủy cửa sổ.
+        print("Đang thoát chương trình...")
         save_config()
         stop_event.set()
         try:
             client.loop_stop()
             client.disconnect()
+            print("MQTT client disconnected.")
         except:
             pass
         try:
             GPIO.cleanup()
-        except Exception as e:
-            print(f"Error during GPIO cleanup: {e}")
+            print("GPIO cleanup successful.")
+        except: pass
         root.destroy()
 
 # ==== Control Buttons ====
