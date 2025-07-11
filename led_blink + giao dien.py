@@ -170,7 +170,7 @@ def update_mqtt():
         return
     print("Stopping existing MQTT client...")
     try: 
-        client.loop_stop
+        client.loop_stop()
         client.disconnect()
         print("MQTT client stopped and disconnected.")
     except Exception as e:
