@@ -14,6 +14,7 @@ import threading
 import time
 import warnings
 import configparser
+import signal
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -22,12 +23,13 @@ LED1_PIN = 3
 LED2_PIN = 27
 try:
     GPIO.setmode(GPIO.BCM)
-    GPIO.setwarnings(False)
     GPIO.setup(LED1_PIN, GPIO.OUT)
     GPIO.setup(LED2_PIN, GPIO.OUT)
     print("GPIO setup successful.")
 except Exception as e:
     print(f"Error setting up GPIO. Are you running on a Raspberry Pi with permissions? Error: {e}")
+
+SHUTDOWN_REQUESTED = False
 threshold = 1.3
 sensor_data = []
 listening = False
@@ -37,6 +39,7 @@ current_topics = []
 
 # ==== Flash LED ====
 def flash_led(pin, duration=0.3):
+    GPIO.setwarnings(False)
     try:
         GPIO.output(pin, GPIO.HIGH)
         time.sleep(duration)
@@ -77,7 +80,7 @@ pass_entry = add_labeled_entry(left, "Password:", 3, "xyz", show="*")
 pub_entry   = add_labeled_entry(left, "Publish Topic:", 4, "",)
 threshold_entry = add_labeled_entry(left, "Ngưỡng cảnh báo:", 5, str(threshold))
 
-def save_config_apply():
+def save_config_apply(silent=False):
     config = configparser.ConfigParser()
     config['MQTT'] = {
         'broker': broker_entry.get(),
@@ -92,8 +95,10 @@ def save_config_apply():
     }
     with open('config.ini', 'w') as f:
         config.write(f)
-    messagebox.showinfo("Lưu cấu hình", "Đã lưu cấu hình thành công")
+    if not silent:
+        messagebox.showinfo("Lưu cấu hình", "Đã lưu cấu hình thành công")
     if listening: update_mqtt()
+
 def load_config():
     config = configparser.ConfigParser()
     config.read('config.ini')
@@ -142,46 +147,56 @@ ttk.Button(left, text="Lưu cấu hình", command=save_config_apply, bootstyle="
 # ==== SỬA ĐỔI CHÍNH Ở ĐÂY ====
 exiting = False
 def on_connect(client, userdata, flags, rc):
+    root.after(0, _on_connect_gui, rc)
+
+def _on_connect_gui(rc):
+    global current_topics
     if rc == 0:
         print("MQTT Connected successfully.")
         global current_topics
         topics_to_subscribe = topic_input.get("1.0", "end").strip().splitlines()
         if not topics_to_subscribe:
             print("No topics to subscribe to.")
-            return
+            if listening:
+                status_label.config(text="Trạng thái: TỰ ĐỘNG(Không có topic)", foreground="green")
+                return
         if current_topics:
             for t in current_topics:
                 client.unsubscribe(t)
         
         current_topics = topics_to_subscribe
         for t in current_topics:
-            client.subscribe(t)
-            print(f"Subscribed to topic: {t}")
+            if t:
+                client.subscribe(t)
+                print(f"Subscribed to topic: {t}")
         if listening:
             status_label.config(text="Trạng thái: TỰ ĐỘNG", foreground="green")
-            messagebox.showinfo("MQTT", "Đã kết nối và bắt đầu chế độ tự động.")
     else:
-        print(f"Failed to connect, return code {rc}\n"); status_label.config(text="Trạng thái: LỖI KẾT NỐI", foreground="red")
-        messagebox.showerror("MQTT Error", f"Không thể kết nối MQTT, mã lỗi: {rc}")
+        print(f"Failed to connect, return code {rc}\n")
+        status_label.config(text="Trạng thái: LỖI KẾT NỐI", foreground="red")
+        if listening:
+            messagebox.showerror("MQTT Error", f"Không thể kết nối MQTT, mã lỗi: {rc}")
 
 def update_mqtt():
     global exiting
     if exiting:
         return
-    print("Stopping existing MQTT client...")
-    try: 
+    try:
         client.loop_stop()
         client.disconnect()
-        print("MQTT client stopped and disconnected.")
+        client.loop_start() 
     except Exception as e:
-         print(f"Info: Error while stopping old client (might be normal): {e}")
+        messagebox.showerror("Lỗi kết nối MQTT", f"Không thể kết nối: {e}"); 
+        status_label.config(text="Trạng thái: MẤT KẾT NỐI", foreground="red")
+        threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True).start()
 
     broker = broker_entry.get().strip()
     port_text = port_entry.get().strip()
     pwd = pass_entry.get().strip()
     user = user_entry.get().strip()
     
-    if listening: status_label.config(text="Trạng thái: ĐANG KẾT NỐI...", foreground="orange")
+    if listening: 
+        status_label.config(text="Trạng thái: ĐANG KẾT NỐI...", foreground="orange")
 
     if not broker:
         messagebox.showerror("MQTT Error", "Vui lòng nhập địa chỉ MQTT Broker")
@@ -190,7 +205,7 @@ def update_mqtt():
     try:
         port = int(port_text)
     except ValueError:
-        messagebox.showerror("Lỗi cấu hình", "Port phải là số nguyên."); toggle_off()
+        messagebox.showerror("Lỗi cấu hình", "Port phải là số nguyên.");
         toggle_off()
         return
 
@@ -202,6 +217,7 @@ def update_mqtt():
     except Exception as e:
         messagebox.showerror("Lỗi kết nối MQTT", f"Không thể kết nối: {e}"); 
         status_label.config(text="Trạng thái: MẤT KẾT NỐI", foreground="red")
+        threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True).start()
 
 # ==== RIGHT PANEL ====
 right = ttk.Frame(main, borderwidth=1, relief="solid")
@@ -298,18 +314,27 @@ def on_message(client, userdata, msg):
 
 def on_disconnect(client, userdata, rc):
     global exiting
-    if exiting:
+    if exiting or not listening:
         return
-    if rc != 0 and listening:
+    if rc != 0:
+        root.after(0, update_disconnect_status)
+    reconnect_thread = threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True)
+    reconnect_thread.start()
+
+def update_disconnect_status():   
         print("Mất kết nối MQTT, đang thử kết nối lại...")
         status_label.config(text="Trạng thái: MẤT KẾT NỐI", foreground="orange")
-    try:
-        time.sleep(2)
-        client.reconnect()
-        client.loop_start()
-        print("Đã thử reconnect MQTT.")
-    except Exception as e:
-            print(f"Reconnect thất bại: {e}")
+
+def _attempt_reconnect(client):
+        time.sleep(2)  # Đợi một chút trước khi reconnect
+        if listening:
+            try:                
+                print(" Đang thực hiện reconnect MQTT...")
+                client.reconnect()
+                print("Đã gửi yêu cầu reconnect MQTT.")
+            except Exception as e:
+                print(f" Reconnect thất bại: {e}")
+
 client = mqtt.Client(protocol=mqtt.MQTTv311)
 client.on_connect = on_connect
 client.on_message = on_message
@@ -374,6 +399,19 @@ def toggle_blink():
             print(f"Could not turn off LEDs: {e}")
         status_label.config(text="Trạng thái: THỦ CÔNG", foreground="red")
 
+def console_input_listener():
+    global SHUTDOWN_REQUESTED
+    while not stop_event.is_set():
+        try:
+            command = input("Gõ 'exit' và nhấn Enter để thoát ứng dụng:\n")
+            if command.strip().lower() == 'exit':
+                print("Lệnh 'exit' đã được nhận. Đang tắt ứng dụng...")
+                SHUTDOWN_REQUESTED = True
+                break
+        except (EOFError, KeyboardInterrupt):
+            SHUTDOWN_REQUESTED = True
+            break
+
 def _write_csv_in_background(path, data_to_save):
     try:
         with open(path, "w", newline="", encoding='utf-8') as f:
@@ -400,11 +438,6 @@ def save_to_csv():
             daemon=True
         ).start()
 
-def auto_connect_and_start():
-    """Tải cấu hình và bật chế độ tự động."""
-    load_config()
-    toggle_on()
-
 def exit_program():
     if messagebox.askokcancel("Xác nhận", "Bạn có muốn thoát chương trình?"):
         global exiting
@@ -426,13 +459,41 @@ def exit_program():
         except: pass
         root.destroy()
 
+def force_exit_program():
+    global exiting
+    if exiting:  # Tránh gọi nhiều lần
+        return
+    print("Thực hiện thoát đột ngột...")
+    exiting = True
+    save_config_apply(silent=True)  
+    stop_event.set()
+    try:
+        client.loop_stop()
+        client.disconnect()
+        print("MQTT client disconnected.")
+    except Exception as e:
+        print(f"Lỗi khi ngắt kết nối MQTT (có thể bỏ qua): {e}")
+        pass
+    try:
+        GPIO.cleanup()
+        print("GPIO cleanup successful.")
+    except Exception as e:
+        print(f"Lỗi khi dọn dẹp GPIO (có thể bỏ qua): {e}")
+        pass
+    print("Đóng ứng dụng.")
+    root.destroy()
+
+def signal_handler(signum, frame):
+    global SHUTDOWN_REQUESTED
+    SHUTDOWN_REQUESTED = True
+
 # ==== Control Buttons ====
 ctrl = ttk.Frame(right)
 ctrl.grid(row=2, column=0, pady=5, sticky="ew")
 ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
 right.grid_rowconfigure(2, weight=0)
 # Thay đổi command của nút "Tự động"
-ttk.Button(ctrl, text="Tự động (ON)", command=auto_connect_and_start, bootstyle="success").grid(row=0, column=0, padx=3)
+ttk.Button(ctrl, text="Tự động (ON)", command=toggle_on, bootstyle="success").grid(row=0, column=0, padx=3)
 ttk.Button(ctrl, text="Thủ công (OFF)", command=toggle_off, bootstyle="danger").grid(row=0, column=1, padx=3)
 save_csv_button = ttk.Button(ctrl, text="Lưu CSV", command=save_to_csv, bootstyle="info")
 save_csv_button.grid(row=0, column=2, padx=3)
@@ -447,11 +508,15 @@ ttk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN
 ttk.Button(led_panel, text="BLINK", width=10, command=toggle_blink).grid(row=0, column=2, padx=5, pady=5)
 
 # ==== Run ====
+console_listener_thread = threading.Thread(target=console_input_listener, daemon=True)
+console_listener_thread.start()
 threading.Thread(target=blink_loop, daemon=True).start()
 threading.Thread(target=auto_clear_loop, daemon=True).start()
+signal.signal(signal.SIGINT, signal_handler)  # Bắt Ctrl+C
 root.protocol("WM_DELETE_WINDOW", exit_program)
 load_config() # Tải cấu hình khi khởi động
 update_table(None)
+print("Chương trình đã sẵn sàng. Đóng cửa sổ hoặc nhấn Ctrl+C để thoát.")
 root.mainloop()
 
 
