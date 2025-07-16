@@ -326,7 +326,7 @@ def resize_columns(event=None):
     ratios = [0.30, 0.20, 0.20, 0.30]
     new_widths = [int(width * r) for r in ratios]
     try:
-        sheet.column_widths(new_widths)
+        sheet.set.column_widths(new_widths)
     except TclError: # Tránh lỗi khi widget đã bị hủy
         pass
 right.bind("<Configure>", resize_columns)
@@ -507,14 +507,22 @@ def console_input_listener():
         except Exception:
             break
 
-def _write_csv_in_background(path, data_to_save):
+def _write_csv_in_background(path, data_list_from_gui):
+    data_to_save = list(data_list_from_gui)
     try:
+        print(f"Bắt đầu ghi {len(data_to_save)} dòng vào file CSV trong luồng nền...")
+        
+        start_time = time.time()
         with open(path, "w", newline="", encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow(["Tên", "Giá trị", "Trạng thái", "Thời gian"])
             writer.writerows(data_to_save)
-        root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {path}"))
+        end_time = time.time()
+       
+        print(f"Ghi file CSV thành công trong {end_time - start_time:.2f} giây.")
+        root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu {len(data_to_save)} dòng dữ liệu vào {path}"))
     except Exception as e:
+        print(f"Lỗi khi ghi file CSV: {e}")
         root.after(0, lambda: messagebox.showerror("Lỗi", f"Không thể lưu file: {e}"))
     finally:
         root.after(0, lambda: save_csv_button.config(state="normal"))
@@ -523,12 +531,14 @@ def save_to_csv():
     if not sensor_data:
         messagebox.showinfo("Thông báo", "Không có dữ liệu để lưu.")
         return
-    path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
-    data_copy = list(sensor_data)
+    path = filedialog.asksaveasfilename(
+        defaultextension=".csv",
+        filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+    )
     if path:
         save_csv_button.config(state="disabled")
-        # CẢI TIẾN: Sử dụng thread pool cho tác vụ lưu file
-        thread_pool.submit(_write_csv_in_background, path, data_copy)
+        print(f"Chuẩn bị lưu {len(sensor_data)} dòng. Gửi tác vụ đến luồng nền...")
+        thread_pool.submit(_write_csv_in_background, path, sensor_data)
 
 exiting = False 
 def _cleanup_and_destroy():
@@ -567,10 +577,6 @@ def _cleanup_and_destroy():
 
     cleanup_thread = threading.Thread(target=cleanup_thread_task, daemon=True)
     cleanup_thread.start()
-    
-    # CẢI TIẾN: Đợi luồng dọn dẹp có thời gian chạy trước khi hủy giao diện
-    # Điều này không bắt buộc nhưng giúp quá trình thoát tuần tự hơn.
-    # root.destroy() sẽ được gọi sau khi quá trình dọn dẹp hoàn tất
     
 def exit_program_graceful():
     global exiting
