@@ -36,7 +36,7 @@ SHUTDOWN_REQUESTED = False
 threshold = 1.3
 sensor_data = []
 listening = False
-blink_mode = False  # Add a global variable to control blink mode
+blink_mode = False
 stop_event = threading.Event()
 current_topics = []
 
@@ -89,23 +89,28 @@ threshold_entry = add_labeled_entry(left, "Warning Threshold:", 5, str(threshold
 
 
 def save_config(silent=False):
-    config = configparser.ConfigParser()
-    config['MQTT'] = {
-        'broker': broker_entry.get(),
-        'port': port_entry.get(),
-        'username': user_entry.get(),
-        'password': pass_entry.get(),
-        'topics': topic_input.get("1.0", "end").strip(),
-        'publish': pub_entry.get()
-    }
-    config['Settings'] = {
-        'threshold': threshold_entry.get()
-    }
-    with open('config.ini', 'w') as f:
-        config.write(f)
-    if not silent:
-        messagebox.showinfo("Save Configuration", "Configuration saved successfully")
-
+    # This function now needs to be thread-safe in case it's called during shutdown
+    try:
+        config = configparser.ConfigParser()
+        config['MQTT'] = {
+            'broker': broker_entry.get(),
+            'port': port_entry.get(),
+            'username': user_entry.get(),
+            'password': pass_entry.get(),
+            'topics': topic_input.get("1.0", "end").strip(),
+            'publish': pub_entry.get()
+        }
+        config['Settings'] = {
+            'threshold': threshold_entry.get()
+        }
+        with open('config.ini', 'w') as f:
+            config.write(f)
+        if not silent:
+            messagebox.showinfo("Save Configuration", "Configuration saved successfully")
+    except tk.TclError:
+        print("Warning: Could not save config, GUI might be closed.")
+    except Exception as e:
+        print(f"Error saving config: {e}")
 
 def apply_and_save_config():
     save_config()
@@ -173,6 +178,7 @@ exiting = False
 
 
 def on_connect(client, userdata, flags, rc):
+    if exiting: return
     root.after(0, _on_connect_gui, rc, flags)
 
 
@@ -219,7 +225,7 @@ def _attempt_reconnect(client):
             port = int(port_entry.get().strip())
             client.connect(broker, port, 60)
             client.loop_start()
-            return  # Exit the loop on successful connection
+            return
         except Exception as e:
             print(f"Reconnect failed: {e}. Retrying in 5 seconds.")
             time.sleep(5)
@@ -261,62 +267,31 @@ def toggle_on(reconnecting=False):
 
     if not broker:
         messagebox.showerror("MQTT Error", "Please enter the MQTT Broker address")
-        toggle_off()  # Switch back to manual mode
+        toggle_off()
         return
     try:
         port = int(port_text)
     except (ValueError, TypeError):
         messagebox.showerror("Configuration Error", "Port must be an integer.")
-        toggle_off()  # Switch back to manual mode
+        toggle_off()
         return
 
     client = mqtt.Client(protocol=mqtt.MQTTv311)
     client.on_connect = on_connect
     client.on_message = on_message
     client.on_disconnect = on_disconnect
-
     client.username_pw_set(user, pwd)
 
     try:
-        print(f"Creating new connection to MQTT broker: {broker}:{port}...")
+        print(f"Connecting to MQTT broker: {broker}:{port}...")
         client.connect(broker, port=port, keepalive=60)
         client.loop_start()
     except Exception as e:
         messagebox.showerror("MQTT Connection Error", f"Cannot connect: {e}");
         status_label.config(text="Status: DISCONNECTED", foreground="red")
-        toggle_off()
-
-    broker = broker_entry.get().strip()
-    port_text = port_entry.get().strip()
-    pwd = pass_entry.get().strip()
-    user = user_entry.get().strip()
-
-    if listening:
-        status_label.config(text="Status: CONNECTING...", foreground="orange")
-
-    if not broker:
-        messagebox.showerror("MQTT Error", "Please enter the MQTT Broker address")
-        toggle_off()
-        return
-    try:
-        port = int(port_text)
-    except (ValueError, TypeError):
-        messagebox.showerror("Configuration Error", "Port must be an integer.");
-        toggle_off()
-        return
-
-    client.username_pw_set(user, pwd)
-    try:
-        print(f"Connecting to MQTT broker: {broker}:{port}...")
-        client.connect(broker, port=port, keepalive=60)
-        client.loop_start()  # Start a new loop
-    except Exception as e:
-        messagebox.showerror("MQTT Connection Error", f"Cannot connect: {e}");
-        status_label.config(text="Status: DISCONNECTED", foreground="red")
         threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True).start()
 
-
-# ==== RIGHT PANEL ====
+# ==== RIGHT PANEL ==== (No changes needed here)
 right = ttk.Frame(main, borderwidth=1, relief="solid")
 right.grid(row=0, column=1, sticky="nsew")
 right.grid_columnconfigure(0, weight=1)
@@ -337,22 +312,20 @@ sheet = Sheet(sheet_frame,
 sheet.enable_bindings()
 sheet.set_options(
     font=("Arial", 10, "normal"),
-    align="w",  # align left
+    align="w",
     header_font=("Arial", 10, "bold"),
     table_bg="#ffffff",
     grid_color="#cccccc"
 )
 sheet.disable_bindings(
     ["edit_cell", "arrowkeys", "drag_and_drop", "column_drag_and_drop", "rc_delete_row", "rc_insert_row",
-     "rc_delete_column", "rc_insert_column"])  # Disable editing
+     "rc_delete_column", "rc_insert_column"])
 sheet.set_options(grid_color="#cccccc", table_bg="#ffffff", index_bg="#eeeeee")
 sheet.grid(row=0, column=0, sticky="nsew")
 
 
-# MODIFICATION: The resize function remains the same...
 def resize_columns(event=None):
-    # Get the width from the parent widget (right frame)
-    width = right.winfo_width() - 15  # Subtract padx*2 and a small margin
+    width = right.winfo_width() - 15
     if width <= 1: return
     ratios = [0.30, 0.20, 0.20, 0.30]
     new_widths = [int(width * r) for r in ratios]
@@ -372,7 +345,7 @@ def update_table(record):
     new_row_index = len(sensor_data) - 1
     if new_row_index >= 0:
         sheet.highlight_rows([new_row_index], bg='#D2EAF8')
-    sheet.see(row=new_row_index, column=0)  # Scroll to the new row
+    sheet.see(row=new_row_index, column=0)
     sheet.redraw()
 
 
@@ -387,11 +360,11 @@ def auto_clear_loop():
         now = datetime.now()
         if now.hour == 0 and now.minute == 0:
             clear_table()
-            stop_event.wait(60)  # Avoid repeating within the same minute
+            stop_event.wait(60)
 
 
 def on_message(client, userdata, msg):
-    if not listening:
+    if not listening or exiting:
         return
     try:
         data = json.loads(msg.payload.decode())
@@ -402,8 +375,7 @@ def on_message(client, userdata, msg):
             current_threshold = float(threshold_entry.get())
         except (ValueError, TclError):
             current_threshold = float('inf')
-            print("Error: Invalid threshold value, using infinity.")
-        status = "EXCEEDED" if value > current_threshold else "SAFE"
+        status = "WARNING" if value > current_threshold else "SAFE"
         time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d-%m")
         record = (name, value, status, time_str)
         sensor_data.append(record)
@@ -414,32 +386,20 @@ def on_message(client, userdata, msg):
         pub_topic = pub_entry.get().strip()
         if pub_topic:
             client.publish(pub_topic, f"({value}, {status}, {int(ts)})")
-
-    except json.JSONDecodeError:
-        print(f"Error decoding JSON from topic '{msg.topic}'")
-    except ValueError:
-        print(f"Error converting value to float from topic '{msg.topic}'")
     except Exception as e:
         print(f"Error in on_message: {e}")
 
-
 def on_disconnect(client, userdata, rc):
-    global exiting
     if not exiting and listening:
         root.after(0, update_disconnect_status)
-
 
 def update_disconnect_status():
     if listening:
         print("MQTT connection lost, attempting to reconnect...")
     status_label.config(text="Status: DISCONNECTED", foreground="orange")
 
-
 client = mqtt.Client(protocol=mqtt.MQTTv311)
-client.on_connect = on_connect
-client.on_message = on_message
-client.on_disconnect = on_disconnect
-
+# ... assign callbacks in toggle_on ...
 
 def toggle_off():
     global listening, current_topics
@@ -452,10 +412,8 @@ def toggle_off():
         client.disconnect()
         print("Disconnected from MQTT.")
     except Exception as e:
-        print(f"Error during MQTT shutdown (can be ignored): {e}")
-
+        pass
     status_label.config(text="Status: MANUAL", foreground="red")
-
 
 def toggle_led(pin):
     if not listening:
@@ -466,7 +424,6 @@ def toggle_led(pin):
     else:
         messagebox.showwarning("Warning", "Please turn off automatic mode before controlling LEDs manually")
 
-
 def blink_loop():
     state = True
     while not stop_event.wait(timeout=0.5):
@@ -476,15 +433,13 @@ def blink_loop():
                 GPIO.output(LED2_PIN, state)
                 state = not state
             except Exception as e:
-                print(f"Error in blink_loop: {e}")
-
+                pass
 
 def toggle_blink():
     global blink_mode
     if listening:
         messagebox.showwarning("Warning", "Please turn off automatic mode before enabling BLINK")
         return
-
     blink_mode = not blink_mode
     if blink_mode:
         status_label.config(text="Status: BLINK", foreground="blue")
@@ -503,16 +458,14 @@ def console_input_listener():
         try:
             command = input()
             if command.strip().lower() == 'exit':
-                print("'exit' command received. Performing emergency exit...")
                 exit_program_force()
                 break
         except (EOFError, KeyboardInterrupt):
             if not exiting:
                 exit_program_force()
             break
-        except Exception as e:
+        except Exception:
             break
-
 
 def _write_csv_in_background(path, data_to_save):
     try:
@@ -526,7 +479,6 @@ def _write_csv_in_background(path, data_to_save):
     finally:
         root.after(0, lambda: save_csv_button.config(state="normal"))
 
-
 def save_to_csv():
     if not sensor_data:
         messagebox.showinfo("Information", "No data to save.")
@@ -535,108 +487,136 @@ def save_to_csv():
     data_copy = list(sensor_data)
     if path:
         save_csv_button.config(state="disabled")
-        threading.Thread(
-            target=_write_csv_in_background,
-            args=(path, data_copy),
-            daemon=True
-        ).start()
-
+        threading.Thread(target=_write_csv_in_background, args=(path, data_copy), daemon=True).start()
 
 exiting = False
-
 
 def exit_program_graceful():
     global exiting
     if exiting: return
     if messagebox.askokcancel("Confirm", "Do you want to exit the program?"):
         exiting = True
-        print("Starting exit process...")
+        print("Starting graceful exit process...")
         stop_event.set()
 
-        # Save data if needed
-        if sensor_data and messagebox.askyesno("Save Data",
-                                               "Do you want to save the data table to a CSV file?"):
-            save_to_csv()
+        if sensor_data and messagebox.askyesno("Save Data", "Do you want to save the data table to a CSV file?"):
+            save_to_csv() # This is already threaded, so it's fine
 
-        # Run cleanup in a separate thread to avoid freezing the GUI
         def cleanup_task():
             print("Disconnecting from MQTT...")
-            toggle_off()  # This function already includes disconnect and unsubscribe
+            try:
+                client.loop_stop()
+                client.disconnect()
+            except Exception: pass
+            
             print("Cleaning up GPIO...")
             try:
                 GPIO.cleanup()
                 print("GPIO cleaned up.")
             except Exception as e:
                 print(f"Error during GPIO cleanup: {e}")
+            
             print("Cleanup complete. Closing application.")
-            root.quit()  # Close mainloop
+            root.quit()
 
         threading.Thread(target=cleanup_task, daemon=True).start()
 
-#==== FIXED FUNCTIONS START ====
-def _force_exit_on_main_thread():
-    """This function runs on the main thread to safely shut down."""
-    print("Performing emergency exit on main thread...")
+#==== NEW/MODIFIED FUNCTIONS START ====
+def _force_cleanup_thread():
+    """
+    This function runs on a separate, short-lived thread to perform
+    critical non-GUI cleanup.
+    """
+    print("Force cleanup thread: Started.")
     try:
-        save_config(silent=True)
-        print("Saved final configuration.")
+        print("Force cleanup thread: Disconnecting MQTT client...")
+        client.loop_stop()
+        client.disconnect()
+        print("Force cleanup thread: MQTT client disconnected.")
     except Exception as e:
-        print(f"Could not save configuration during emergency exit: {e}")
-    finally:
-        # Use os._exit for an immediate termination as requested by the "force" nature
-        print("Exiting process now.")
-        os._exit(1)
+        print(f"Force cleanup thread: Error disconnecting MQTT (can be ignored): {e}")
+
+    try:
+        print("Force cleanup thread: Cleaning up GPIO...")
+        GPIO.cleanup()
+        print("Force cleanup thread: GPIO cleaned up.")
+    except Exception as e:
+        print(f"Force cleanup thread: Error cleaning up GPIO (can be ignored): {e}")
+    print("Force cleanup thread: Finished.")
 
 def exit_program_force():
     """
-    Initiates a forced exit. This is safe to call from any thread
-    because it schedules the actual exit logic on the main GUI thread.
+    Initiates a forceful, immediate exit. It starts a parallel cleanup
+    thread and then terminates the main process.
     """
     global exiting
     if exiting:
         return
     exiting = True
     stop_event.set()
-    # Schedule the GUI-related operations and the final exit on the main thread
-    root.after(0, _force_exit_on_main_thread)
-#==== FIXED FUNCTIONS END ====
+
+    print("\nEMERGENCY EXIT INITIATED.")
+    print("Starting a parallel cleanup thread...")
+    
+    cleanup_thread = threading.Thread(target=_force_cleanup_thread, daemon=True)
+    cleanup_thread.start()
+    
+    # Give the cleanup thread a moment to run before killing the process
+    print("Waiting 0.5 seconds before forceful termination...")
+    time.sleep(0.5)
+    
+    print("Terminating process now. os._exit(1)")
+    os._exit(1)  # Force exit the entire program
 
 def signal_handler(signum, frame):
-    print("\nCtrl+C signal received.")
-    exit_program_force()
+    """Handles Ctrl+C, triggering the force exit."""
+    if not exiting:
+        print("\nCtrl+C detected!")
+        exit_program_force()
+#==== NEW/MODIFIED FUNCTIONS END ====
 
 
+# Control buttons panel
 ctrl = ttk.Frame(right)
 ctrl.grid(row=2, column=0, pady=5, sticky="ew")
 ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
 right.grid_rowconfigure(2, weight=0)
-# Change the command of the "Automatic" button
+
 ttk.Button(ctrl, text="Automatic (ON)", command=toggle_on, bootstyle="success").grid(row=0, column=0, padx=3)
 ttk.Button(ctrl, text="Manual (OFF)", command=toggle_off, bootstyle="danger").grid(row=0, column=1, padx=3)
 save_csv_button = ttk.Button(ctrl, text="Save CSV", command=save_to_csv, bootstyle="info")
 save_csv_button.grid(row=0, column=2, padx=3)
 ttk.Button(ctrl, text="Exit", command=exit_program_graceful, bootstyle="secondary").grid(row=0, column=3, padx=3)
 
+# Manual LED control panel
 led_panel = ttk.LabelFrame(right, text="Manual LED Control")
 led_panel.grid(row=3, column=0, pady=5, sticky="ew")
 led_panel.grid_columnconfigure((0, 1, 2), weight=1)
 right.grid_rowconfigure(3, weight=0)
-ttk.Button(led_panel, text="LED1", width=10, command=lambda: toggle_led(LED1_PIN)).grid(row=0, column=0, padx=5,
-                                                                                       pady=5)
-ttk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN)).grid(row=0, column=1, padx=5,
-                                                                                       pady=5)
+ttk.Button(led_panel, text="LED1", width=10, command=lambda: toggle_led(LED1_PIN)).grid(row=0, column=0, padx=5, pady=5)
+ttk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN)).grid(row=0, column=1, padx=5, pady=5)
 ttk.Button(led_panel, text="BLINK", width=10, command=toggle_blink).grid(row=0, column=2, padx=5, pady=5)
 
 # ==== Run ====
 console_listener_thread = threading.Thread(target=console_input_listener, daemon=True)
 console_listener_thread.start()
-threading.Thread(target=blink_loop, daemon=True).start()
-signal.signal(signal.SIGINT, signal_handler)  # Catch Ctrl+C
+auto_clear_thread = threading.Thread(target=auto_clear_loop, daemon=True)
+auto_clear_thread.start()
+blink_thread = threading.Thread(target=blink_loop, daemon=True)
+blink_thread.start()
+
+signal.signal(signal.SIGINT, signal_handler)
 root.protocol("WM_DELETE_WINDOW", exit_program_graceful)
-load_config()  # Load config on startup
+
+load_config()
 update_table(None)
-print("Program is ready. Close the window or press Ctrl+C to exit.")
+print("Program is ready. Close the window, or use the terminal to exit.")
 root.mainloop()
+
+# This part will only be reached after a graceful exit (root.quit())
 if not exiting:
-    GPIO.cleanup()  # Cleanup GPIO on exit
+    exiting = True
+    print("Mainloop finished. Final cleanup.")
+    GPIO.cleanup()
+
 print("Program exited.")
