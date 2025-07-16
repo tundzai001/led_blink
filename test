@@ -40,6 +40,7 @@ blink_mode = False  # Add a global variable to control blink mode
 stop_event = threading.Event()
 current_topics = []
 
+
 # ==== Flash LED ====
 def flash_led(pin, duration=0.3):
     GPIO.setwarnings(False)
@@ -49,6 +50,7 @@ def flash_led(pin, duration=0.3):
         GPIO.output(pin, GPIO.LOW)
     except Exception as e:
         print(f"Error flashing LED on pin {pin}: {e}")
+
 
 # ==== GUI ====
 root = ttk.Window(themename="flatly")
@@ -68,6 +70,7 @@ left = ttk.LabelFrame(main, text="MQTT & Threshold Settings")
 left.grid(row=0, column=0, sticky="nsw", padx=(0, 15), pady=10)
 left.grid_rowconfigure(8, weight=1)
 
+
 def add_labeled_entry(frame, label, row, default="", width=14, show=None):
     ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
     entry = ttk.Entry(frame, width=width, show=show)
@@ -76,12 +79,14 @@ def add_labeled_entry(frame, label, row, default="", width=14, show=None):
     frame.grid_columnconfigure(1, weight=1)
     return entry
 
+
 broker_entry = add_labeled_entry(left, "MQTT Broker:", 0, "aitogy.xyz")
 port_entry = add_labeled_entry(left, "Port:", 1, "1883")
 user_entry = add_labeled_entry(left, "Username:", 2, "abc")
 pass_entry = add_labeled_entry(left, "Password:", 3, "xyz", show="*")
 pub_entry = add_labeled_entry(left, "Publish Topic:", 4, "", )
 threshold_entry = add_labeled_entry(left, "Warning Threshold:", 5, str(threshold))
+
 
 def save_config(silent=False):
     config = configparser.ConfigParser()
@@ -101,11 +106,13 @@ def save_config(silent=False):
     if not silent:
         messagebox.showinfo("Save Configuration", "Configuration saved successfully")
 
+
 def apply_and_save_config():
     save_config()
     if listening:
         print("In automatic mode, applying new MQTT configuration...")
         update_mqtt()
+
 
 def load_config():
     config = configparser.ConfigParser()
@@ -117,12 +124,16 @@ def load_config():
         mqtt_config = config["MQTT"]
         broker_entry.delete(0, tk.END)
         broker_entry.insert(0, mqtt_config.get("broker", ""))
+
         port_entry.delete(0, tk.END)
         port_entry.insert(0, mqtt_config.get("port", "1883"))
+
         user_entry.delete(0, tk.END)
         user_entry.insert(0, mqtt_config.get("username", ""))
+
         pass_entry.delete(0, tk.END)
         pass_entry.insert(0, mqtt_config.get("password", ""))
+
         topic_input.delete("1.0", tk.END)
         topic_input.insert("1.0", mqtt_config.get("topics", ""))
         pub_entry.delete(0, tk.END)
@@ -132,12 +143,14 @@ def load_config():
         threshold_entry.insert(0, config["Settings"]["threshold"])
     print("Configuration loaded.")
 
+
 def load_threshold():
     config = configparser.ConfigParser()
     config.read('config.ini')
     if "Settings" in config and 'threshold' in config['Settings']:
         threshold_entry.delete(0, tk.END)
         threshold_entry.insert(0, config['Settings']['threshold'])
+
 
 def toggle_pass():
     if pass_entry.cget("show") == "":
@@ -147,17 +160,21 @@ def toggle_pass():
         pass_entry.config(show="")
         show_btn.config(text="🙈")
 
+
 show_btn = ttk.Button(left, text="👁", command=toggle_pass, width=2)
 show_btn.grid(row=3, column=2, sticky="w")
 ttk.Label(left, text="Subscribe Topics (1 per line):").grid(row=7, column=0, columnspan=2, sticky="w")
 topic_input = tk.Text(left, width=22, height=6)
 topic_input.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
 ttk.Button(left, text="Save & Apply", command=apply_and_save_config, bootstyle="primary").grid(row=9, column=0,
-                                                                                                  columnspan=3,                                                                                                  sticky="ew", pady=5)
+                                                                                                  columnspan=3,
+                                                                                                  sticky="ew", pady=5)
 exiting = False
+
 
 def on_connect(client, userdata, flags, rc):
     root.after(0, _on_connect_gui, rc, flags)
+
 
 def _on_connect_gui(rc, flags):
     global current_topics
@@ -528,46 +545,6 @@ def save_to_csv():
 exiting = False
 
 
-def _cleanup_and_destroy():
-    global exiting
-    if exiting:
-        return
-    exiting = True
-    print("Exit signal received. Starting cleanup process...")
-    stop_event.set()
-
-    def cleanup_thread_task():
-        print("Cleanup thread: Disconnecting from MQTT...")
-        try:
-            client.loop_stop()
-            client.disconnect()
-            print("Cleanup thread: Disconnected from MQTT.")
-        except Exception as e:
-            print(f"Cleanup thread: Error during MQTT disconnection (can be ignored): {e}")
-
-        print("Cleanup thread: Cleaning up GPIO...")
-        try:
-            GPIO.cleanup()
-            print("Cleanup thread: GPIO cleaned up.")
-        except Exception as e:
-            print(f"Cleanup thread: Error during GPIO cleanup (can be ignored): {e}")
-
-        print("Cleanup thread: Finished.")
-
-    cleanup_thread = threading.Thread(target=cleanup_thread_task, daemon=True)
-    cleanup_thread.start()
-
-    try:
-        save_config(silent=True)
-    except tk.TclError:
-        print("Could not save configuration because the GUI is already destroyed.")
-    try:
-        print("Closing main interface.")
-        root.destroy()
-    except tk.TclError:
-        print("GUI was already closed or encountered an error.")
-
-
 def exit_program_graceful():
     global exiting
     if exiting: return
@@ -596,21 +573,33 @@ def exit_program_graceful():
 
         threading.Thread(target=cleanup_task, daemon=True).start()
 
-
-def exit_program_force():
-    global exiting
-    if exiting:
-        return
-    exiting = True
-    stop_event.set()
-    print("Performing emergency exit...")
+#==== FIXED FUNCTIONS START ====
+def _force_exit_on_main_thread():
+    """This function runs on the main thread to safely shut down."""
+    print("Performing emergency exit on main thread...")
     try:
         save_config(silent=True)
         print("Saved final configuration.")
     except Exception as e:
         print(f"Could not save configuration during emergency exit: {e}")
+    finally:
+        # Use os._exit for an immediate termination as requested by the "force" nature
+        print("Exiting process now.")
         os._exit(1)
 
+def exit_program_force():
+    """
+    Initiates a forced exit. This is safe to call from any thread
+    because it schedules the actual exit logic on the main GUI thread.
+    """
+    global exiting
+    if exiting:
+        return
+    exiting = True
+    stop_event.set()
+    # Schedule the GUI-related operations and the final exit on the main thread
+    root.after(0, _force_exit_on_main_thread)
+#==== FIXED FUNCTIONS END ====
 
 def signal_handler(signum, frame):
     print("\nCtrl+C signal received.")
