@@ -1,0 +1,653 @@
+import ttkbootstrap as ttk
+import tkinter as tk
+from tkinter import TclError
+from ttkbootstrap.constants import *
+from ttkbootstrap import Style
+from ttkbootstrap.dialogs import Messagebox
+from tkinter import messagebox
+from tkinter import filedialog
+from tksheet import Sheet
+import paho.mqtt.client as mqtt
+import json
+from datetime import datetime
+import csv
+import RPi.GPIO as GPIO
+import threading
+import time
+import warnings
+import configparser
+import signal
+import os
+
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+# GPIOsetup
+LED1_PIN = 3
+LED2_PIN = 27
+try:
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    GPIO.setup(LED1_PIN, GPIO.OUT)
+    GPIO.setup(LED2_PIN, GPIO.OUT)
+    print("GPIO setup successful.")
+except Exception as e:
+    print(f"Error setting up GPIO. Are you running on a Raspberry Pi with permissions? Error: {e}")
+
+SHUTDOWN_REQUESTED = False
+threshold = 1.3
+sensor_data = []
+listening = False
+blink_mode = False  # Add a global variable to control blink mode
+stop_event = threading.Event()
+current_topics = []
+
+# ==== Flash LED ====
+def flash_led(pin, duration=0.3):
+    GPIO.setwarnings(False)
+    try:
+        GPIO.output(pin, GPIO.HIGH)
+        time.sleep(duration)
+        GPIO.output(pin, GPIO.LOW)
+    except Exception as e:
+        print(f"Error flashing LED on pin {pin}: {e}")
+
+# ==== GUI ====
+root = ttk.Window(themename="flatly")
+root.title("Sensor & LED Control Interface")
+root.geometry(f"{root.winfo_screenwidth()}x{root.winfo_screenheight()}")
+main = ttk.Frame(root)
+main.pack(fill="both", expand=True, padx=10, pady=10)
+main.grid_columnconfigure(1, weight=1)
+main.grid_rowconfigure(0, weight=1)
+
+style = ttk.Style()
+style.configure("Treeview.Heading", font=("Arial", 10, "bold"))
+style.configure("Treeview", rowheight=24, font=("Arial", 10))
+
+# ==== LEFT PANEL ====
+left = ttk.LabelFrame(main, text="MQTT & Threshold Settings")
+left.grid(row=0, column=0, sticky="nsw", padx=(0, 15), pady=10)
+left.grid_rowconfigure(8, weight=1)
+
+def add_labeled_entry(frame, label, row, default="", width=14, show=None):
+    ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
+    entry = ttk.Entry(frame, width=width, show=show)
+    entry.insert(0, default)
+    entry.grid(row=row, column=1, sticky="ew", pady=2)
+    frame.grid_columnconfigure(1, weight=1)
+    return entry
+
+broker_entry = add_labeled_entry(left, "MQTT Broker:", 0, "aitogy.xyz")
+port_entry = add_labeled_entry(left, "Port:", 1, "1883")
+user_entry = add_labeled_entry(left, "Username:", 2, "abc")
+pass_entry = add_labeled_entry(left, "Password:", 3, "xyz", show="*")
+pub_entry = add_labeled_entry(left, "Publish Topic:", 4, "", )
+threshold_entry = add_labeled_entry(left, "Warning Threshold:", 5, str(threshold))
+
+def save_config(silent=False):
+    config = configparser.ConfigParser()
+    config['MQTT'] = {
+        'broker': broker_entry.get(),
+        'port': port_entry.get(),
+        'username': user_entry.get(),
+        'password': pass_entry.get(),
+        'topics': topic_input.get("1.0", "end").strip(),
+        'publish': pub_entry.get()
+    }
+    config['Settings'] = {
+        'threshold': threshold_entry.get()
+    }
+    with open('config.ini', 'w') as f:
+        config.write(f)
+    if not silent:
+        messagebox.showinfo("Save Configuration", "Configuration saved successfully")
+
+def apply_and_save_config():
+    save_config()
+    if listening:
+        print("In automatic mode, applying new MQTT configuration...")
+        update_mqtt()
+
+def load_config():
+    config = configparser.ConfigParser()
+    if not os.path.exists('config.ini'):
+        print("config.ini file not found. Using default values.")
+        return
+    config.read('config.ini')
+    if "MQTT" in config:
+        mqtt_config = config["MQTT"]
+        broker_entry.delete(0, tk.END)
+        broker_entry.insert(0, mqtt_config.get("broker", ""))
+        port_entry.delete(0, tk.END)
+        port_entry.insert(0, mqtt_config.get("port", "1883"))
+        user_entry.delete(0, tk.END)
+        user_entry.insert(0, mqtt_config.get("username", ""))
+        pass_entry.delete(0, tk.END)
+        pass_entry.insert(0, mqtt_config.get("password", ""))
+        topic_input.delete("1.0", tk.END)
+        topic_input.insert("1.0", mqtt_config.get("topics", ""))
+        pub_entry.delete(0, tk.END)
+        pub_entry.insert(0, mqtt_config.get("publish", "led_data"))
+    if "Settings" in config and "threshold" in config["Settings"]:
+        threshold_entry.delete(0, tk.END)
+        threshold_entry.insert(0, config["Settings"]["threshold"])
+    print("Configuration loaded.")
+
+def load_threshold():
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    if "Settings" in config and 'threshold' in config['Settings']:
+        threshold_entry.delete(0, tk.END)
+        threshold_entry.insert(0, config['Settings']['threshold'])
+
+def toggle_pass():
+    if pass_entry.cget("show") == "":
+        pass_entry.config(show="*")
+        show_btn.config(text="👁")
+    else:
+        pass_entry.config(show="")
+        show_btn.config(text="🙈")
+
+show_btn = ttk.Button(left, text="👁", command=toggle_pass, width=2)
+show_btn.grid(row=3, column=2, sticky="w")
+ttk.Label(left, text="Subscribe Topics (1 per line):").grid(row=7, column=0, columnspan=2, sticky="w")
+topic_input = tk.Text(left, width=22, height=6)
+topic_input.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
+ttk.Button(left, text="Save & Apply", command=apply_and_save_config, bootstyle="primary").grid(row=9, column=0,
+                                                                                                  columnspan=3,                                                                                                  sticky="ew", pady=5)
+exiting = False
+
+def on_connect(client, userdata, flags, rc):
+    root.after(0, _on_connect_gui, rc, flags)
+
+def _on_connect_gui(rc, flags):
+    global current_topics
+    if rc == 0:
+        print("MQTT Connected successfully.")
+        topics_to_subscribe = [t for t in topic_input.get("1.0", "end").strip().splitlines() if t]
+
+        topics_to_unsubscribe = set(current_topics) - set(topics_to_subscribe)
+        for t in topics_to_unsubscribe:
+            if t:
+                client.unsubscribe(t)
+                print(f"Unsubscribed from topic: {t}")
+
+        topics_to_subscribe_new = set(topics_to_subscribe) - set(current_topics)
+        for t in topics_to_subscribe_new:
+            if t:
+                client.subscribe(t)
+                print(f"Subscribed to topic: {t}")
+
+        current_topics = topics_to_subscribe
+
+        if not current_topics:
+            print("Warning: No topics specified to subscribe to.")
+            if listening:
+                status_label.config(text="Status: AUTOMATIC (No topics)", foreground="green")
+        else:
+            if listening:
+                status_label.config(text="Status: AUTOMATIC", foreground="green")
+    else:
+        print(f"Failed to connect, return code {rc}\n")
+        status_label.config(text="Status: CONNECTION ERROR", foreground="red")
+        if listening:
+            messagebox.showerror("MQTT Error", f"Cannot connect to MQTT, error code: {rc}")
+        toggle_off()
+
+
+def _attempt_reconnect(client):
+    while not stop_event.is_set() and listening:
+        try:
+            print("Attempting to reconnect to MQTT...")
+            broker = broker_entry.get().strip()
+            port = int(port_entry.get().strip())
+            client.connect(broker, port, 60)
+            client.loop_start()
+            return  # Exit the loop on successful connection
+        except Exception as e:
+            print(f"Reconnect failed: {e}. Retrying in 5 seconds.")
+            time.sleep(5)
+
+
+def update_mqtt():
+    global exiting
+    if exiting:
+        return
+    try:
+        client.loop_stop()
+        if client.disconnect():
+            client.disconnect()
+    except Exception as e:
+        messagebox.showerror("MQTT Connection Error", f"Cannot connect: {e}");
+        status_label.config(text="Status: DISCONNECTED", foreground="red")
+        threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True).start()
+    if listening:
+        toggle_on(reconnecting=True)
+
+
+def toggle_on(reconnecting=False):
+    global listening, client
+    if blink_mode:
+        messagebox.showwarning("Warning", "Please turn off BLINK mode before enabling AUTOMATIC mode")
+        return
+    if listening and not reconnecting:
+        print("Automatic mode is already enabled.")
+        return
+
+    listening = True
+    if blink_mode: toggle_blink()
+    status_label.config(text="Status: CONNECTING...", foreground="orange")
+
+    broker = broker_entry.get().strip()
+    port_text = port_entry.get().strip()
+    pwd = pass_entry.get().strip()
+    user = user_entry.get().strip()
+
+    if not broker:
+        messagebox.showerror("MQTT Error", "Please enter the MQTT Broker address")
+        toggle_off()  # Switch back to manual mode
+        return
+    try:
+        port = int(port_text)
+    except (ValueError, TypeError):
+        messagebox.showerror("Configuration Error", "Port must be an integer.")
+        toggle_off()  # Switch back to manual mode
+        return
+
+    client = mqtt.Client(protocol=mqtt.MQTTv311)
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.on_disconnect = on_disconnect
+
+    client.username_pw_set(user, pwd)
+
+    try:
+        print(f"Creating new connection to MQTT broker: {broker}:{port}...")
+        client.connect(broker, port=port, keepalive=60)
+        client.loop_start()
+    except Exception as e:
+        messagebox.showerror("MQTT Connection Error", f"Cannot connect: {e}");
+        status_label.config(text="Status: DISCONNECTED", foreground="red")
+        toggle_off()
+
+    broker = broker_entry.get().strip()
+    port_text = port_entry.get().strip()
+    pwd = pass_entry.get().strip()
+    user = user_entry.get().strip()
+
+    if listening:
+        status_label.config(text="Status: CONNECTING...", foreground="orange")
+
+    if not broker:
+        messagebox.showerror("MQTT Error", "Please enter the MQTT Broker address")
+        toggle_off()
+        return
+    try:
+        port = int(port_text)
+    except (ValueError, TypeError):
+        messagebox.showerror("Configuration Error", "Port must be an integer.");
+        toggle_off()
+        return
+
+    client.username_pw_set(user, pwd)
+    try:
+        print(f"Connecting to MQTT broker: {broker}:{port}...")
+        client.connect(broker, port=port, keepalive=60)
+        client.loop_start()  # Start a new loop
+    except Exception as e:
+        messagebox.showerror("MQTT Connection Error", f"Cannot connect: {e}");
+        status_label.config(text="Status: DISCONNECTED", foreground="red")
+        threading.Thread(target=_attempt_reconnect, args=(client,), daemon=True).start()
+
+
+# ==== RIGHT PANEL ====
+right = ttk.Frame(main, borderwidth=1, relief="solid")
+right.grid(row=0, column=1, sticky="nsew")
+right.grid_columnconfigure(0, weight=1)
+right.grid_rowconfigure(1, weight=1)
+
+status_label = ttk.Label(right, text="Status: MANUAL", foreground="red", font=("Arial", 11, "bold"))
+status_label.grid(row=0, column=0, pady=5)
+
+sheet_frame = ttk.Frame(right)
+sheet_frame.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
+sheet_frame.grid_columnconfigure(0, weight=1)
+sheet_frame.grid_rowconfigure(0, weight=1)
+sheet = Sheet(sheet_frame,
+              headers=["Name", "Value", "Status", "Timestamp"],
+              show_row_index=False,
+              column_widths=[150, 100, 100, 150],
+              )
+sheet.enable_bindings()
+sheet.set_options(
+    font=("Arial", 10, "normal"),
+    align="w",  # align left
+    header_font=("Arial", 10, "bold"),
+    table_bg="#ffffff",
+    grid_color="#cccccc"
+)
+sheet.disable_bindings(
+    ["edit_cell", "arrowkeys", "drag_and_drop", "column_drag_and_drop", "rc_delete_row", "rc_insert_row",
+     "rc_delete_column", "rc_insert_column"])  # Disable editing
+sheet.set_options(grid_color="#cccccc", table_bg="#ffffff", index_bg="#eeeeee")
+sheet.grid(row=0, column=0, sticky="nsew")
+
+
+# MODIFICATION: The resize function remains the same...
+def resize_columns(event=None):
+    # Get the width from the parent widget (right frame)
+    width = right.winfo_width() - 15  # Subtract padx*2 and a small margin
+    if width <= 1: return
+    ratios = [0.30, 0.20, 0.20, 0.30]
+    new_widths = [int(width * r) for r in ratios]
+    try:
+        sheet.column_widths(new_widths)
+    except:
+        pass
+
+
+right.bind("<Configure>", resize_columns)
+
+
+def update_table(record):
+    sheet.dehighlight_all()
+    data_as_lists = [list(row) for row in sensor_data]
+    sheet.set_sheet_data(data_as_lists)
+    new_row_index = len(sensor_data) - 1
+    if new_row_index >= 0:
+        sheet.highlight_rows([new_row_index], bg='#D2EAF8')
+    sheet.see(row=new_row_index, column=0)  # Scroll to the new row
+    sheet.redraw()
+
+
+def clear_table():
+    sensor_data.clear()
+    root.after(0, lambda: sheet.set_sheet_data([]))
+    print("Cleared data table at 00:00")
+
+
+def auto_clear_loop():
+    while not stop_event.wait(timeout=10):
+        now = datetime.now()
+        if now.hour == 0 and now.minute == 0:
+            clear_table()
+            stop_event.wait(60)  # Avoid repeating within the same minute
+
+
+def on_message(client, userdata, msg):
+    if not listening:
+        return
+    try:
+        data = json.loads(msg.payload.decode())
+        name = data.get("sensorname", msg.topic)
+        value = float(data.get("value", 0))
+        ts = float(data.get("timestamp", time.time()))
+        try:
+            current_threshold = float(threshold_entry.get())
+        except (ValueError, TclError):
+            current_threshold = float('inf')
+            print("Error: Invalid threshold value, using infinity.")
+        status = "EXCEEDED" if value > current_threshold else "SAFE"
+        time_str = datetime.fromtimestamp(ts).strftime("%H:%M:%S %d-%m")
+        record = (name, value, status, time_str)
+        sensor_data.append(record)
+        root.after(0, update_table, record)
+        threading.Thread(target=flash_led, args=(LED1_PIN,), daemon=True).start()
+        if value > current_threshold:
+            threading.Thread(target=flash_led, args=(LED2_PIN,), daemon=True).start()
+        pub_topic = pub_entry.get().strip()
+        if pub_topic:
+            client.publish(pub_topic, f"({value}, {status}, {int(ts)})")
+
+    except json.JSONDecodeError:
+        print(f"Error decoding JSON from topic '{msg.topic}'")
+    except ValueError:
+        print(f"Error converting value to float from topic '{msg.topic}'")
+    except Exception as e:
+        print(f"Error in on_message: {e}")
+
+
+def on_disconnect(client, userdata, rc):
+    global exiting
+    if not exiting and listening:
+        root.after(0, update_disconnect_status)
+
+
+def update_disconnect_status():
+    if listening:
+        print("MQTT connection lost, attempting to reconnect...")
+    status_label.config(text="Status: DISCONNECTED", foreground="orange")
+
+
+client = mqtt.Client(protocol=mqtt.MQTTv311)
+client.on_connect = on_connect
+client.on_message = on_message
+client.on_disconnect = on_disconnect
+
+
+def toggle_off():
+    global listening, current_topics
+    if not listening:
+        return
+    listening = False
+    current_topics.clear()
+    try:
+        client.loop_stop()
+        client.disconnect()
+        print("Disconnected from MQTT.")
+    except Exception as e:
+        print(f"Error during MQTT shutdown (can be ignored): {e}")
+
+    status_label.config(text="Status: MANUAL", foreground="red")
+
+
+def toggle_led(pin):
+    if not listening:
+        try:
+            GPIO.output(pin, not GPIO.input(pin))
+        except Exception as e:
+            print(f"Could not toggle LED on pin {pin}: {e}")
+    else:
+        messagebox.showwarning("Warning", "Please turn off automatic mode before controlling LEDs manually")
+
+
+def blink_loop():
+    state = True
+    while not stop_event.wait(timeout=0.5):
+        if blink_mode and not listening:
+            try:
+                GPIO.output(LED1_PIN, state)
+                GPIO.output(LED2_PIN, state)
+                state = not state
+            except Exception as e:
+                print(f"Error in blink_loop: {e}")
+
+
+def toggle_blink():
+    global blink_mode
+    if listening:
+        messagebox.showwarning("Warning", "Please turn off automatic mode before enabling BLINK")
+        return
+
+    blink_mode = not blink_mode
+    if blink_mode:
+        status_label.config(text="Status: BLINK", foreground="blue")
+    else:
+        try:
+            GPIO.output(LED1_PIN, GPIO.LOW)
+            GPIO.output(LED2_PIN, GPIO.LOW)
+        except Exception as e:
+            print(f"Could not turn off LEDs: {e}")
+        status_label.config(text="Status: MANUAL", foreground="red")
+
+
+def console_input_listener():
+    print("Type 'exit' and press Enter in this console for an emergency exit.")
+    while not stop_event.is_set():
+        try:
+            command = input()
+            if command.strip().lower() == 'exit':
+                print("'exit' command received. Performing emergency exit...")
+                exit_program_force()
+                break
+        except (EOFError, KeyboardInterrupt):
+            if not exiting:
+                exit_program_force()
+            break
+        except Exception as e:
+            break
+
+
+def _write_csv_in_background(path, data_to_save):
+    try:
+        with open(path, "w", newline="", encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(["Name", "Value", "Status", "Timestamp"])
+            writer.writerows(data_to_save)
+        root.after(0, lambda: messagebox.showinfo("Success", f"Data saved to {path}"))
+    except Exception as e:
+        root.after(0, lambda: messagebox.showerror("Error", f"Could not save file: {e}"))
+    finally:
+        root.after(0, lambda: save_csv_button.config(state="normal"))
+
+
+def save_to_csv():
+    if not sensor_data:
+        messagebox.showinfo("Information", "No data to save.")
+        return
+    path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+    data_copy = list(sensor_data)
+    if path:
+        save_csv_button.config(state="disabled")
+        threading.Thread(
+            target=_write_csv_in_background,
+            args=(path, data_copy),
+            daemon=True
+        ).start()
+
+
+exiting = False
+
+
+def _cleanup_and_destroy():
+    global exiting
+    if exiting:
+        return
+    exiting = True
+    print("Exit signal received. Starting cleanup process...")
+    stop_event.set()
+
+    def cleanup_thread_task():
+        print("Cleanup thread: Disconnecting from MQTT...")
+        try:
+            client.loop_stop()
+            client.disconnect()
+            print("Cleanup thread: Disconnected from MQTT.")
+        except Exception as e:
+            print(f"Cleanup thread: Error during MQTT disconnection (can be ignored): {e}")
+
+        print("Cleanup thread: Cleaning up GPIO...")
+        try:
+            GPIO.cleanup()
+            print("Cleanup thread: GPIO cleaned up.")
+        except Exception as e:
+            print(f"Cleanup thread: Error during GPIO cleanup (can be ignored): {e}")
+
+        print("Cleanup thread: Finished.")
+
+    cleanup_thread = threading.Thread(target=cleanup_thread_task, daemon=True)
+    cleanup_thread.start()
+
+    try:
+        save_config(silent=True)
+    except tk.TclError:
+        print("Could not save configuration because the GUI is already destroyed.")
+    try:
+        print("Closing main interface.")
+        root.destroy()
+    except tk.TclError:
+        print("GUI was already closed or encountered an error.")
+
+
+def exit_program_graceful():
+    global exiting
+    if exiting: return
+    if messagebox.askokcancel("Confirm", "Do you want to exit the program?"):
+        exiting = True
+        print("Starting exit process...")
+        stop_event.set()
+
+        # Save data if needed
+        if sensor_data and messagebox.askyesno("Save Data",
+                                               "Do you want to save the data table to a CSV file?"):
+            save_to_csv()
+
+        # Run cleanup in a separate thread to avoid freezing the GUI
+        def cleanup_task():
+            print("Disconnecting from MQTT...")
+            toggle_off()  # This function already includes disconnect and unsubscribe
+            print("Cleaning up GPIO...")
+            try:
+                GPIO.cleanup()
+                print("GPIO cleaned up.")
+            except Exception as e:
+                print(f"Error during GPIO cleanup: {e}")
+            print("Cleanup complete. Closing application.")
+            root.quit()  # Close mainloop
+
+        threading.Thread(target=cleanup_task, daemon=True).start()
+
+
+def exit_program_force():
+    global exiting
+    if exiting:
+        return
+    exiting = True
+    stop_event.set()
+    print("Performing emergency exit...")
+    try:
+        save_config(silent=True)
+        print("Saved final configuration.")
+    except Exception as e:
+        print(f"Could not save configuration during emergency exit: {e}")
+        os._exit(1)
+
+
+def signal_handler(signum, frame):
+    print("\nCtrl+C signal received.")
+    exit_program_force()
+
+
+ctrl = ttk.Frame(right)
+ctrl.grid(row=2, column=0, pady=5, sticky="ew")
+ctrl.grid_columnconfigure((0, 1, 2, 3), weight=1)
+right.grid_rowconfigure(2, weight=0)
+# Change the command of the "Automatic" button
+ttk.Button(ctrl, text="Automatic (ON)", command=toggle_on, bootstyle="success").grid(row=0, column=0, padx=3)
+ttk.Button(ctrl, text="Manual (OFF)", command=toggle_off, bootstyle="danger").grid(row=0, column=1, padx=3)
+save_csv_button = ttk.Button(ctrl, text="Save CSV", command=save_to_csv, bootstyle="info")
+save_csv_button.grid(row=0, column=2, padx=3)
+ttk.Button(ctrl, text="Exit", command=exit_program_graceful, bootstyle="secondary").grid(row=0, column=3, padx=3)
+
+led_panel = ttk.LabelFrame(right, text="Manual LED Control")
+led_panel.grid(row=3, column=0, pady=5, sticky="ew")
+led_panel.grid_columnconfigure((0, 1, 2), weight=1)
+right.grid_rowconfigure(3, weight=0)
+ttk.Button(led_panel, text="LED1", width=10, command=lambda: toggle_led(LED1_PIN)).grid(row=0, column=0, padx=5,
+                                                                                       pady=5)
+ttk.Button(led_panel, text="LED2", width=10, command=lambda: toggle_led(LED2_PIN)).grid(row=0, column=1, padx=5,
+                                                                                       pady=5)
+ttk.Button(led_panel, text="BLINK", width=10, command=toggle_blink).grid(row=0, column=2, padx=5, pady=5)
+
+# ==== Run ====
+console_listener_thread = threading.Thread(target=console_input_listener, daemon=True)
+console_listener_thread.start()
+threading.Thread(target=blink_loop, daemon=True).start()
+signal.signal(signal.SIGINT, signal_handler)  # Catch Ctrl+C
+root.protocol("WM_DELETE_WINDOW", exit_program_graceful)
+load_config()  # Load config on startup
+update_table(None)
+print("Program is ready. Close the window or press Ctrl+C to exit.")
+root.mainloop()
+if not exiting:
+    GPIO.cleanup()  # Cleanup GPIO on exit
+print("Program exited.")
