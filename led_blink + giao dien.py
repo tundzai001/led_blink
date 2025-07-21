@@ -16,7 +16,7 @@ except (ImportError, RuntimeError):
 import threading
 import time
 import warnings
-import configparser                                                                                                                                                                                              
+import configparser
 import signal
 import os
 import sys
@@ -315,7 +315,12 @@ class AppGUI:
         self.pass_entry.insert(0, self.backend.password); self.pub_entry.insert(0, self.backend.publish_topic)
         self.threshold_entry.insert(0, str(self.backend.threshold)); self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
         initial_data = self.backend.get_new_data()
-        if initial_data: self.sheet.set_sheet_data([d for d in initial_data if isinstance(d, tuple)])
+        if initial_data:
+            valid_data = [d for d in initial_data if isinstance(d, tuple)]
+            self.sheet.set_sheet_data(valid_data)
+        else:
+            self.sheet.set_sheet_data([])
+    
         self.update_status_label()
 
     def periodic_update(self):
@@ -323,7 +328,9 @@ class AppGUI:
         self.update_status_label()
         new_records = self.backend.get_new_data()
         if new_records:
-            if any(record == "CLEAR" for record in new_records): self.sheet.set_sheet_data([]); print("GUI đã nhận tín hiệu và xóa bảng.")
+            if any(record == "CLEAR" for record in new_records): 
+                self.sheet.set_sheet_data([])
+                print("GUI đã nhận tín hiệu và xóa bảng.")
             else:
                 for record in new_records:
                     if isinstance(record, tuple): self.add_row_to_table(record)
@@ -345,9 +352,16 @@ class AppGUI:
         except Exception as e: messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
 
     def add_row_to_table(self, record):
-        self.sheet.insert_row(values=record, idx='end'); self.sheet.dehighlight_all()
-        new_row_index = len(self.sheet.get_sheet_data()) - 1
-        if new_row_index >= 0: self.sheet.highlight_rows([new_row_index], bg='#D2EAF8'); self.sheet.see(row=new_row_index, column=0)
+        current_data = self.sheet.get_sheet_data()
+        current_data.append(record)
+        self.sheet.set_sheet_data(current_data)
+        self.sheet.deselect()
+        self.sheet.dehighlight_all()
+        new_row_index = len(current_data) - 1
+        
+        if new_row_index >= 0:
+            self.sheet.highlight_rows([new_row_index], bg='#D2EAF8')
+            self.sheet.see(row=new_row_index, column=0)
 
     def clear_table_gui(self):
         self.sheet.set_sheet_data([]); self.backend.clear_all_data()
@@ -494,4 +508,3 @@ if __name__ == "__main__":
             print(f"LỖI KHÔNG THỂ KHỞI ĐỘNG LẠI: {e}")
     else:
         print("Chương trình đã kết thúc.")
-        
