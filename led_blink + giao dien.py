@@ -5,7 +5,7 @@ from ttkbootstrap.constants import *
 from tksheet import Sheet
 import paho.mqtt.client as mqtt
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 try:
     import RPi.GPIO as GPIO
@@ -24,6 +24,7 @@ import queue
 from collections import deque
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import matplotlib.dates as mdates # <-- LỖI SỬA 1: THÊM IMPORT
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -50,7 +51,8 @@ class Backend:
         self.username = "abc"; self.password = "xyz"; self.publish_topic = ""
         self.subscribe_topics = []; self.threshold = 1.3; self.led1_pin = 3; self.led2_pin = 27
         self.session_file = "session.json"; self.sensor_data = []
-        self.plot_data_points = deque(maxlen=100); self.new_data_lock = threading.Lock()
+        self.plot_data_points = deque() # Sử dụng deque không giới hạn để lưu toàn bộ dữ liệu
+        self.new_data_lock = threading.Lock()
         self.new_data_queue = []; self.client = mqtt.Client(protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message; self.stop_event = threading.Event()
@@ -190,7 +192,9 @@ class Backend:
     def save_session_data(self):
         print(" -> Đang lưu trạng thái hiện tại vào file...")
         try:
-            plot_data_serializable = [(dt.isoformat(), val) for dt, val in self.plot_data_points]
+            # Chuyển đổi deque thành list trước khi serialize
+            plot_data_list = list(self.plot_data_points)
+            plot_data_serializable = [(dt.isoformat(), val) for dt, val in plot_data_list]
             session = {"sensor_data": self.sensor_data, "plot_data_points": plot_data_serializable}
             with open(self.session_file, "w") as f: json.dump(session, f)
             print(f" -> Đã lưu trạng thái vào {self.session_file}")
@@ -204,11 +208,12 @@ class Backend:
                 self.sensor_data = session.get("sensor_data", [])
                 plot_data_serializable = session.get("plot_data_points", [])
                 self.plot_data_points.clear()
-                for dt_str, val in plot_data_serializable: self.plot_data_points.append((datetime.fromisoformat(dt_str), val))
+                for dt_str, val in plot_data_serializable:
+                    self.plot_data_points.append((datetime.fromisoformat(dt_str), val))
                 with self.new_data_lock: self.new_data_queue.extend(self.sensor_data)
                 print(" -> Đã tải lại dữ liệu thành công.")
             except Exception as e: print(f" -> Lỗi khi tải trạng thái: {e}")
-            finally: 
+            finally:
                 if os.path.exists(self.session_file): os.remove(self.session_file)
 
     def shutdown(self):
@@ -234,6 +239,8 @@ class AppGUI:
         self.root.after(500, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
+    # <-- LỖI SỬA 2: TOÀN BỘ CÁC HÀM BÊN DƯỚI ĐÃ ĐƯỢC DI CHUYỂN VÀO TRONG LỚP NÀY
+    
     def destroy_all_windows(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.destroy()
         if self.root and self.root.winfo_exists(): self.root.destroy()
@@ -320,7 +327,7 @@ class AppGUI:
             self.sheet.set_sheet_data(valid_data)
         else:
             self.sheet.set_sheet_data([])
-    
+
         self.update_status_label()
 
     def periodic_update(self):
@@ -328,7 +335,7 @@ class AppGUI:
         self.update_status_label()
         new_records = self.backend.get_new_data()
         if new_records:
-            if any(record == "CLEAR" for record in new_records): 
+            if any(record == "CLEAR" for record in new_records):
                 self.sheet.set_sheet_data([])
                 print("GUI đã nhận tín hiệu và xóa bảng.")
             else:
@@ -353,12 +360,12 @@ class AppGUI:
 
     def add_row_to_table(self, record):
         current_data = self.sheet.get_sheet_data()
-        current_data.append(record)
+        current_data.append(list(record)) # Chuyển tuple thành list để thêm vào tksheet
         self.sheet.set_sheet_data(current_data)
-        self.sheet.deselect()
+        self.sheet.deselect("all")
         self.sheet.dehighlight_all()
         new_row_index = len(current_data) - 1
-        
+
         if new_row_index >= 0:
             self.sheet.highlight_rows([new_row_index], bg='#D2EAF8')
             self.sheet.see(row=new_row_index, column=0)
@@ -384,35 +391,125 @@ class AppGUI:
         if path: self.save_csv_button.config(state="disabled"); threading.Thread(target=self._write_csv_in_background, args=(path, list(self.backend.sensor_data)), daemon=True).start()
 
     def show_chart_window(self):
-        if self.chart_window is not None and self.chart_window.winfo_exists(): self.chart_window.lift(); return
-        self.chart_window = tk.Toplevel(self.root); self.chart_window.title("Biểu đồ Dữ liệu Cảm biến"); self.chart_window.geometry("900x650"); self.chart_window.protocol("WM_DELETE_WINDOW", self.on_chart_close)
-        top_frame = ttk.Frame(self.chart_window); top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5); ttk.Label(top_frame, text="Chọn đơn vị:").pack(side=tk.LEFT)
-        self.unit_selector_combobox = ttk.Combobox(top_frame, state="readonly", values=list(self.CONVERSION_FACTORS.keys())); self.unit_selector_combobox.set("m"); self.unit_selector_combobox.pack(side=tk.LEFT, padx=5); self.unit_selector_combobox.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
-        self.chart_fig = Figure(figsize=(5, 4), dpi=100); self.chart_ax = self.chart_fig.add_subplot(111); self.chart_canvas = FigureCanvasTkAgg(self.chart_fig, master=self.chart_window); self.chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        toolbar = NavigationToolbar2Tk(self.chart_canvas, self.chart_window); toolbar.update(); self.chart_canvas.mpl_connect('pick_event', self.on_pick); self.update_plot()
+        if self.chart_window is not None and self.chart_window.winfo_exists():
+            self.chart_window.lift()
+            return
+
+        self.chart_window = tk.Toplevel(self.root)
+        self.chart_window.title("Biểu đồ Dữ liệu Cảm biến")
+        self.chart_window.geometry("900x650")
+        self.chart_window.protocol("WM_DELETE_WINDOW", self.on_chart_close)
+
+        top_frame = ttk.Frame(self.chart_window)
+        top_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(top_frame, text="Chọn đơn vị:").pack(side=tk.LEFT, padx=(0, 5))
+        self.unit_selector_combobox = ttk.Combobox(top_frame, state="readonly", values=list(self.CONVERSION_FACTORS.keys()))
+        self.unit_selector_combobox.set("m")
+        self.unit_selector_combobox.pack(side=tk.LEFT, padx=5)
+        self.unit_selector_combobox.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
+
+        self.auto_scroll_check_var = tk.BooleanVar(value=True)
+        auto_scroll_check = ttk.Checkbutton(top_frame, text="Tự động cuộn", variable=self.auto_scroll_check_var, bootstyle="round-toggle")
+        auto_scroll_check.pack(side=tk.LEFT, padx=10)
+
+        self.chart_fig = Figure(figsize=(5, 4), dpi=100)
+        self.chart_ax = self.chart_fig.add_subplot(111)
+        self.chart_canvas = FigureCanvasTkAgg(self.chart_fig, master=self.chart_window)
+        self.chart_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        toolbar = NavigationToolbar2Tk(self.chart_canvas, self.chart_window)
+        toolbar.update()
+        self.chart_canvas.mpl_connect('pick_event', self.on_pick)
+        self.update_plot()
 
     def update_plot(self):
-        if not hasattr(self, 'chart_canvas') or self.chart_canvas is None: return
-        if hasattr(self, 'current_annotation') and self.current_annotation: self.current_annotation.remove()
-        self.current_annotation = None; selected_unit = self.unit_selector_combobox.get() if self.unit_selector_combobox else "m"; factor = self.CONVERSION_FACTORS.get(selected_unit, 1.0); self.chart_ax.clear()
+        if not hasattr(self, 'chart_canvas') or self.chart_canvas is None or not self.chart_window.winfo_exists():
+            return
+
+        if hasattr(self, 'current_annotation') and self.current_annotation:
+            self.current_annotation.remove()
+        self.current_annotation = None
+
+        selected_unit = self.unit_selector_combobox.get()
+        factor = self.CONVERSION_FACTORS.get(selected_unit, 1.0)
+
         plot_data = list(self.backend.plot_data_points)
-        if not plot_data: self.chart_ax.set_title("Biểu đồ Cảm biến Mực nước"); self.chart_ax.set_ylabel(f"Mực nước ({selected_unit})"); self.chart_ax.grid(True); self.chart_canvas.draw(); return
-        times = [item[0] for item in plot_data]; values_converted = [item[1] * factor for item in plot_data]; self.chart_ax.plot(times, values_converted, 'o-', label=f"Mực nước", picker=5)
-        try: threshold_meters = self.backend.threshold; threshold_converted = threshold_meters * factor; self.chart_ax.axhline(y=threshold_converted, color='r', linestyle='--', label=f'Ngưỡng ({threshold_converted:.2f} {selected_unit})')
-        except (ValueError, TclError): pass
-        self.chart_ax.set_title("Biểu đồ Cảm biến Mực nước"); self.chart_ax.set_ylabel(f"Mực nước ({selected_unit})"); self.chart_ax.legend(); self.chart_ax.grid(True); self.chart_fig.autofmt_xdate(); self.chart_canvas.draw_idle()
+        current_xlim = self.chart_ax.get_xlim()
+
+        self.chart_ax.clear()
+
+        if not plot_data:
+            self.chart_ax.set_title("Biểu đồ Cảm biến Mực nước")
+            self.chart_ax.set_ylabel(f"Mực nước ({selected_unit})")
+            self.chart_ax.grid(True)
+            self.chart_canvas.draw()
+            return
+
+        times = [item[0] for item in plot_data]
+        values_converted = [item[1] * factor for item in plot_data]
+
+        self.chart_ax.plot(times, values_converted, 'o-', label=f"Mực nước", picker=5, markersize=4)
+
+        try:
+            threshold_meters = self.backend.threshold
+            threshold_converted = threshold_meters * factor
+            self.chart_ax.axhline(y=threshold_converted, color='r', linestyle='--', label=f'Ngưỡng ({threshold_converted:.2f} {selected_unit})')
+        except (ValueError, TclError):
+            pass
+
+        self.chart_ax.set_title("Biểu đồ Cảm biến Mực nước")
+        self.chart_ax.set_ylabel(f"Mực nước ({selected_unit})")
+        self.chart_ax.legend()
+        self.chart_ax.grid(True)
+
+        if self.auto_scroll_check_var.get():
+            latest_time = times[-1]
+            view_window = timedelta(seconds=60)
+            start_time = latest_time - view_window
+            self.chart_ax.set_xlim(left=start_time, right=latest_time + timedelta(seconds=5))
+        else:
+            # Chỉ đặt lại xlim nếu nó hợp lệ
+            if all(mdates.epoch2num(dt) not in (0, -1) for dt in mdates.num2date(current_xlim)):
+                 self.chart_ax.set_xlim(current_xlim)
+
+
+        self.chart_fig.autofmt_xdate()
+        self.chart_canvas.draw_idle()
 
     def on_pick(self, event):
         if hasattr(self, 'current_annotation') and self.current_annotation: self.current_annotation.remove()
-        self.current_annotation = None; ind = event.ind[0]; x_displayed, y_displayed = event.artist.get_data(); picked_x_time = x_displayed[ind]; picked_y_converted = y_displayed[ind]
-        plot_data = list(self.backend.plot_data_points); original_value_meters = plot_data[ind][1]
+        self.current_annotation = None
+        
+        # Lấy dữ liệu từ artist của sự kiện pick
+        x_data, y_data = event.artist.get_data()
+        
+        # event.ind là một mảng các chỉ số của các điểm được chọn
+        ind = event.ind[0]
+        
+        # Chuyển đổi dữ liệu trục x từ số float của matplotlib về datetime
+        picked_x_time = mdates.num2date(x_data[ind])
+        picked_y_converted = y_data[ind]
+
+        plot_data = list(self.backend.plot_data_points)
+        original_value_meters = plot_data[ind][1]
+
         box_color = "#C8E6C9" if original_value_meters <= self.backend.threshold else "#FFCDD2"
-        selected_unit = self.unit_selector_combobox.get(); text = f"Giá trị: {picked_y_converted:.2f} {selected_unit}\nThời gian: {picked_x_time.strftime('%H:%M:%S %d-%m-%Y')}"
-        self.current_annotation = self.chart_ax.annotate(text, xy=(picked_x_time, picked_y_converted), xytext=(20, 20), textcoords='offset points', bbox=dict(boxstyle="round,pad=0.5", fc=box_color, alpha=0.9), arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0.1"))
+        selected_unit = self.unit_selector_combobox.get()
+        text = f"Giá trị: {picked_y_converted:.2f} {selected_unit}\nThời gian: {picked_x_time.strftime('%H:%M:%S %d-%m-%Y')}"
+
+        self.current_annotation = self.chart_ax.annotate(text,
+            xy=(x_data[ind], picked_y_converted),
+            xytext=(20, 20),
+            textcoords='offset points',
+            bbox=dict(boxstyle="round,pad=0.5", fc=box_color, alpha=0.9),
+            arrowprops=dict(arrowstyle="->", connectionstyle="arc3,rad=0.1"))
         self.chart_canvas.draw_idle()
 
     def on_chart_close(self):
-        if hasattr(self, 'chart_window') and self.chart_window: self.chart_window.destroy(); self.chart_window = None
+        if hasattr(self, 'chart_window') and self.chart_window:
+            self.chart_window.destroy()
+            self.chart_window = None
 
 # ==============================================================================
 # KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
@@ -423,7 +520,7 @@ class MainController:
         self.command_queue = command_queue
         self.app_instance = None
         self.root = ttk.Window()
-        self.root.withdraw() 
+        self.root.withdraw()
 
     def run(self):
         self.check_for_commands()
@@ -456,7 +553,9 @@ class MainController:
         print(" -> Nhận lệnh thoát...")
         if self.app_instance: self.app_instance.destroy_all_windows(); self.app_instance = None
         self.backend.shutdown()
-        self.root.quit()
+        # self.root.quit() # Không cần quit() vì destroy() đã xử lý rồi
+        self.root.destroy()
+
 
     def handle_restart(self):
         print(" -> Nhận lệnh khởi động lại...")
@@ -489,16 +588,17 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     backend_instance = Backend()
     backend_instance.start_background_tasks()
-    
+
     console_thread = threading.Thread(target=console_input_listener, args=(command_queue,), daemon=True)
     console_thread.start()
-    
+
     print("Chương trình đã sẵn sàng.")
     print("Gõ 'show' để mở giao diện, 'exit' để thoát, 'restart' để khởi động lại.")
-    
+
     main_controller = MainController(backend_instance, command_queue)
-    main_controller.create_gui_window()
-    main_controller.run() 
+    # Tự động mở giao diện khi khởi động
+    command_queue.put('show')
+    main_controller.run()
 
     if needs_restart:
         print("\n" + "="*50); print("KHỞI ĐỘNG LẠI CHƯƠNG TRÌNH..."); print("="*50 + "\n")
