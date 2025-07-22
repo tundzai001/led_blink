@@ -24,10 +24,10 @@ import numpy as np
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 CONFIG_FILE = 'config.ini'
 SESSION_FILE = "session.json"
-DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA" # Tín hiệu để xóa dữ liệu trên GUI
+DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA"
 LED1_PIN = 3
 LED2_PIN = 27
-MAX_PLOT_POINTS = 10000 # Giới hạn số điểm dữ liệu trong bộ nhớ cho biểu đồ
+MAX_PLOT_POINTS = 10000
 
 # --- MOCK GPIO CHO MÔI TRƯỜNG KHÔNG PHẢI RASPBERRY PI ---
 try:
@@ -49,7 +49,7 @@ if not IS_PI:
     GPIO = MockGPIO()
 
 # ==============================================================================
-# LỚP LOGIC NỀN (BACKEND)
+# LỚP LOGIC NỀN (BACKEND) - Không thay đổi
 # ==============================================================================
 class Backend:
     def __init__(self):
@@ -66,7 +66,7 @@ class Backend:
         
         self.sensor_data = []
         self.plot_data_points = deque(maxlen=MAX_PLOT_POINTS)
-        self.gui_update_queue = queue.Queue() # Thread-safe queue để giao tiếp với GUI
+        self.gui_update_queue = queue.Queue()
 
         self.client = mqtt.Client(protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect
@@ -194,7 +194,7 @@ class Backend:
         if self.listening:
             print("Đang ở chế độ tự động, áp dụng cấu hình MQTT mới...")
             self.toggle_off()
-            time.sleep(1) # Chờ một chút để đảm bảo luồng MQTT đã dừng hẳn
+            time.sleep(1)
             self.toggle_on()
 
     def check_leds(self):
@@ -313,12 +313,13 @@ class AppGUI:
         self.root.title("Giao diện Cảm biến & Điều khiển LED")
         self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
         
-        # --- Trạng thái Biểu đồ ---
         self.chart_window = None
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         self.points_per_view = 40
         self.current_start_index = 0
         
+        self.last_highlighted_row = None
+
         self.create_widgets()
         self.load_initial_data()
         self.root.after(250, self.periodic_update)
@@ -340,7 +341,8 @@ class AppGUI:
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10)
         main.pack(fill="both", expand=True)
-        main.grid_columnconfigure(1, weight=1)
+        main.grid_columnconfigure(1, weight=1) 
+        main.grid_columnconfigure(0, weight=0)
         main.grid_rowconfigure(0, weight=1)
         self.create_left_panel(main)
         self.create_right_panel(main)
@@ -348,7 +350,6 @@ class AppGUI:
     def create_left_panel(self, parent):
         left = ttk.LabelFrame(parent, text="Cài đặt MQTT & Ngưỡng", padding=10)
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
-        left.grid_columnconfigure(1, weight=1)
 
         def add_labeled_entry(frame, label, row, show=None):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -368,7 +369,7 @@ class AppGUI:
         self.threshold_entry = add_labeled_entry(left, "Ngưỡng (m):", 5)
 
         ttk.Label(left, text="Subscribe Topics:").grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.topic_input = tk.Text(left, height=6, relief="solid", borderwidth=1)
+        self.topic_input = tk.Text(left, height=6, width=35, relief="solid", borderwidth=1)
         self.topic_input.grid(row=7, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
         
         left.grid_rowconfigure(7, weight=1)
@@ -378,19 +379,23 @@ class AppGUI:
         right = ttk.Frame(parent)
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_rowconfigure(1, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
         self.status_label = ttk.Label(right, text="", font=("Arial", 11, "bold"))
         self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5))
 
         sheet_frame = ttk.Frame(right)
         sheet_frame.grid(row=1, column=0, sticky="nsew")
+        
         self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"], show_row_index=True)
-        self.sheet.enable_bindings()
-        
-        # === SỬA LỖI TẠI ĐÂY ===
-        self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
-        
         self.sheet.pack(fill=tk.BOTH, expand=True)
+        
+        # ### FIX ###: GIẢI PHÁP TRIỆT ĐỂ
+        # Tắt tất cả các tương tác không cần thiết (kéo, sửa, click...)
+        self.sheet.disable_bindings()
+
+        self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
+
         self.create_control_panel(right)
 
     def create_control_panel(self, parent_frame):
@@ -423,8 +428,7 @@ class AppGUI:
         self.pub_entry.insert(0, self.backend.publish_topic)
         self.threshold_entry.insert(0, str(self.backend.threshold))
         self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
-        self.periodic_update()
-
+    
     def periodic_update(self):
         if not self.root.winfo_exists(): return
         self.update_status_label()
@@ -438,9 +442,25 @@ class AppGUI:
             else:
                 valid_records = [rec for rec in new_updates if isinstance(rec, tuple)]
                 if valid_records:
-                    self.sheet.insert_rows(values=valid_records)
-                    self.sheet.see(row=self.sheet.get_total_rows() - 1)
-            
+                    # Chèn dữ liệu mới vào bảng
+                    self.sheet.insert_rows(valid_records)
+
+                    # Xóa tất cả các màu nền highlight cũ
+                    self.sheet.dehighlight_all()
+                    
+                    # Lấy chỉ số của dòng cuối cùng (dòng mới nhất)
+                    last_row_index = self.sheet.get_total_rows() - 1
+
+                    if last_row_index >= 0:
+                        # Cuộn tới dòng mới nhất (hành động này không còn gây ra vấn đề thị giác)
+                        self.sheet.see(row=last_row_index)
+
+                        # Bỏ chọn tất cả các ô để loại bỏ màu nền lựa chọn (màu xanh)
+                        self.sheet.deselect()
+
+                        # Chỉ tô màu xanh lá cho dòng mới nhất
+                        self.sheet.highlight_rows(rows=[last_row_index], bg="#E7F5E7", fg="black")
+                        
             if self.chart_window and self.chart_window.winfo_exists(): self.update_plot()
         
         self.root.after(250, self.periodic_update)
@@ -486,8 +506,7 @@ class AppGUI:
         finally:
             if self.root.winfo_exists(): self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
 
-    # --- CÁC HÀM ĐIỀU KHIỂN BIỂU ĐỒ (Tái cấu trúc) ---
-
+    # --- Các hàm biểu đồ (không thay đổi) ---
     def show_chart_window(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.lift(); return
         
@@ -564,7 +583,7 @@ class AppGUI:
 
         max_start_idx = max(0, total_points - self.points_per_view)
         pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
-        self.position_scale.set(pos_percent) # Dùng set() để không kích hoạt command
+        self.position_scale.set(pos_percent)
             
         start = self.current_start_index
         end = min(total_points, start + self.points_per_view)
@@ -626,19 +645,19 @@ class AppGUI:
         self.update_plot()
 
     def on_chart_close(self):
-        plt.close(self.fig) # Giải phóng tài nguyên matplotlib
-        self.chart_wndow.destroy()
+        plt.close(self.fig)
+        self.chart_window.destroy()
         self.chart_window = None
 
 # ==============================================================================
-# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
+# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER) - Không thay đổi
 # ==============================================================================
 class MainController:
     def __init__(self, backend, command_queue):
         self.backend = backend
         self.command_queue = command_queue
         self.app_instance = None
-        self.root = ttk.Window() # Cửa sổ root ẩn để quản lý vòng lặp chính
+        self.root = ttk.Window()
         self.root.withdraw()
 
     def run(self):
@@ -653,7 +672,8 @@ class MainController:
             elif command == 'restart': self.handle_restart()
         except queue.Empty: pass
         finally:
-            if self.root.winfo_exists(): self.root.after(100, self.check_for_commands)
+            if not self.backend.exiting and self.root.winfo_exists(): 
+                self.root.after(100, self.check_for_commands)
 
     def create_gui_window(self):
         if self.app_instance and self.app_instance.root.winfo_exists():
@@ -680,7 +700,7 @@ class MainController:
         self.handle_shutdown(silent=True)
 
 # ==============================================================================
-# KHỐI THỰC THI CHÍNH
+# KHỐI THỰC THI CHÍNH (MAIN) - Không thay đổi
 # ==============================================================================
 needs_restart = False
 command_queue = queue.Queue()
@@ -696,7 +716,7 @@ def console_input_listener(cmd_queue: queue.Queue):
 
 def signal_handler(signum, frame):
     print("\nNhận tín hiệu ngắt (Ctrl+C), đang thoát...")
-    if not command_queue.empty(): # Tránh đưa lệnh trùng lặp
+    if not command_queue.empty():
         try: command_queue.get_nowait()
         except queue.Empty: pass
     command_queue.put('exit')
@@ -713,7 +733,7 @@ if __name__ == "__main__":
     print("Gõ 'show' để mở giao diện, 'exit' để thoát, 'restart' để khởi động lại.")
     
     main_controller = MainController(backend_instance, command_queue)
-    command_queue.put('show') # Tự động mở GUI khi khởi động
+    command_queue.put('show')
     
     main_controller.run()
     
