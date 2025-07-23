@@ -291,7 +291,7 @@ class Backend:
 
     def shutdown(self, silent=False):
         if self.exiting: return
-        if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát/khởi động lại...")
+        if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát...")
         self.exiting = True
         self.stop_event.set()
         try:
@@ -458,8 +458,16 @@ class AppGUI:
                         # Bỏ chọn tất cả các ô để loại bỏ màu nền lựa chọn (màu xanh)
                         self.sheet.deselect()
 
-                        # Chỉ tô màu xanh lá cho dòng mới nhất
-                        self.sheet.highlight_rows(rows=[last_row_index], bg="#E7F5E7", fg="black")
+                        # Lấy bản ghi cuối cùng để xác định màu
+                        last_record = valid_records[-1]
+                        status = last_record[2]  # Trạng thái ở cột thứ 3 (index 2)
+
+                        # Chọn màu dựa trên trạng thái
+                        if status == "VUOT MUC":
+                            highlight_color = "#F8D7DA"  # Màu đỏ nhạt
+                        else:
+                            highlight_color = "#D4EDDA"  # Màu xanh lá nhạt
+                        self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
                         
             if self.chart_window and self.chart_window.winfo_exists(): self.update_plot()
         
