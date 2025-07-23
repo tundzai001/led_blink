@@ -39,6 +39,13 @@ LED1_PIN = 3
 LED2_PIN = 27
 MAX_PLOT_POINTS = 10000
 
+# --- CẬP NHẬT: ĐỊNH NGHĨA SẴN ĐƯỜNG DẪN TUYỆT ĐỐI ĐẾN CÁC FILE ÂM THANH ---
+SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
+WARNING_VOICE_FILE = os.path.join(SOUNDS_DIR, "warning_voice.mp3")
+CRITICAL_VOICE_FILE = os.path.join(SOUNDS_DIR, "critical_voice.mp3")
+SIREN_SOUND_FILE = os.path.join(SOUNDS_DIR, "siren.mp3")
+
+
 # --- MOCK GPIO CHO MÔI TRƯỜNG KHÔNG PHẢI RASPBERRY PI ---
 try:
     import RPi.GPIO as GPIO
@@ -59,7 +66,7 @@ if not IS_PI:
     GPIO = MockGPIO()
 
 # ==============================================================================
-# LỚP LOGIC NỀN (BACKEND)
+# LỚP LOGIC NỀN (BACKEND) - Logic cảnh báo đa cấp
 # ==============================================================================
 class Backend:
     def __init__(self):
@@ -71,17 +78,24 @@ class Backend:
         self.broker, self.port, self.username, self.password = "aitogy.xyz", 1883, "abc", "xyz"
         self.publish_topic = ""
         self.subscribe_topics = []
-        self.threshold = 1.1
+        
+        self.warning_threshold = 1.0
+        self.critical_threshold = 1.2
+
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
-        # --- THAY ĐỔI: Quản lý 2 file âm thanh và trạng thái cảnh báo ---
-        self.siren_sound_path = ""      # Đường dẫn file còi
-        self.warning_sound_path = ""    # Đường dẫn file lời nói
-        self.alert_active = False       # Cờ báo hiệu cảnh báo đang hoạt động
-        self.alert_thread = None        # Luồng xử lý vòng lặp âm thanh
+        
+        self.warning_sound = None
+        self.critical_sound = None
+        self.siren_sound = None
+        self.alert_thread = None
+        self.alert_stop_event = threading.Event()
         self.mixer_initialized = False
+        self.current_alert_level = 0 # 0: Safe, 1: Warning, 2: Critical
+
         self.sensor_data = []
         self.plot_data_points = deque(maxlen=MAX_PLOT_POINTS)
         self.gui_update_queue = queue.Queue()
+
         self.client = mqtt.Client(protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
@@ -93,18 +107,192 @@ class Backend:
         self.load_config()
 
     def setup_audio_mixer(self):
-        """Khởi tạo Pygame mixer để sẵn sàng phát âm thanh."""
-        if not PYGAME_AVAILABLE:
-            return
+        if not PYGAME_AVAILABLE: return
         try:
-            # Tăng kích thước buffer để giảm lỗi 'underrun' trên các hệ thống yếu
-            pygame.mixer.init(buffer=4096)
+            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
             print("Pygame mixer đã khởi tạo thành công.")
         except Exception as e:
             print(f"LỖI: Không thể khởi tạo pygame mixer: {e}")
             self.mixer_initialized = False
 
+    def _load_audio_files(self):
+        if not self.mixer_initialized: return
+        self.warning_sound, self.critical_sound, self.siren_sound = None, None, None
+        try:
+            if os.path.exists(WARNING_VOICE_FILE):
+                self.warning_sound = pygame.mixer.Sound(WARNING_VOICE_FILE)
+                print(f"Đã tải file cảnh báo sớm: {WARNING_VOICE_FILE}")
+            else:
+                print(f"CẢNH BÁO: Không tìm thấy file {WARNING_VOICE_FILE}")
+
+            if os.path.exists(CRITICAL_VOICE_FILE):
+                self.critical_sound = pygame.mixer.Sound(CRITICAL_VOICE_FILE)
+                print(f"Đã tải file cảnh báo nguy hiểm: {CRITICAL_VOICE_FILE}")
+            else:
+                print(f"CẢNH BÁO: Không tìm thấy file {CRITICAL_VOICE_FILE}")
+
+            if os.path.exists(SIREN_SOUND_FILE):
+                self.siren_sound = pygame.mixer.Sound(SIREN_SOUND_FILE)
+                print(f"Đã tải file còi: {SIREN_SOUND_FILE}")
+            else:
+                print(f"CẢNH BÁO: Không tìm thấy file {SIREN_SOUND_FILE}")
+        except Exception as e:
+            print(f"LỖI khi tải file âm thanh: {e}")
+
+    def on_message(self, client, userdata, msg):
+        if not self.listening or self.exiting: return
+        try:
+            data = json.loads(msg.payload.decode())
+            value = float(data.get("value", 0))
+            
+            new_level = 0
+            if value >= self.critical_threshold:
+                new_level = 2
+            elif value >= self.warning_threshold:
+                new_level = 1
+
+            if new_level != self.current_alert_level:
+                print(f"Chuyển đổi cấp độ cảnh báo: {self.current_alert_level} -> {new_level}")
+                self.stop_all_alerts()
+
+                if new_level == 1:
+                    if self.warning_sound:
+                        print(" -> Phát cảnh báo sớm (một lần).")
+                        self.warning_sound.play()
+                
+                elif new_level == 2:
+                    self.alert_stop_event.clear()
+                    self.alert_thread = threading.Thread(target=self._critical_alert_loop, daemon=True)
+                    self.alert_thread.start()
+            
+            self.current_alert_level = new_level
+            
+            name = data.get("sensorname", msg.topic)
+            ts = float(data.get("timestamp", time.time()))
+            dt_object = datetime.fromtimestamp(ts)
+            
+            is_over_threshold = value >= self.critical_threshold
+            status = "NGUY HIEM" if is_over_threshold else ("CANH BAO" if new_level == 1 else "AN TOAN")
+            record = (name, f"{value:.2f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
+            
+            self.sensor_data.append(record)
+            self.plot_data_points.append((dt_object, value))
+            self.gui_update_queue.put(record)
+
+            threading.Thread(target=self.flash_led, args=(self.led1_pin,), daemon=True).start()
+            if new_level > 0:
+                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
+            
+            if self.publish_topic:
+                self.client.publish(self.publish_topic, f"({value:.2f}, {status}, {int(ts)})")
+                
+        except (json.JSONDecodeError, ValueError, KeyError) as e:
+            print(f"Lỗi xử lý message: {e}")
+
+    def stop_all_alerts(self):
+        if self.alert_thread and self.alert_thread.is_alive():
+            self.alert_stop_event.set()
+        if self.mixer_initialized:
+            pygame.mixer.stop()
+
+    def _critical_alert_loop(self):
+        if not self.mixer_initialized or not self.siren_sound or not self.critical_sound:
+            print("Bỏ qua vòng lặp nguy hiểm: mixer hoặc file âm thanh chưa sẵn sàng.")
+            return
+
+        print("Bắt đầu vòng lặp cảnh báo NGUY HIỂM...")
+        try:
+            while not self.alert_stop_event.is_set():
+                if self.alert_stop_event.is_set(): break
+                print(" -> Phát còi...")
+                self.siren_sound.play()
+                while pygame.mixer.get_busy() and not self.alert_stop_event.is_set():
+                    time.sleep(0.1)
+                
+                if self.alert_stop_event.is_set(): break
+                print(" -> Phát lời nói sơ tán...")
+                self.critical_sound.play()
+                while pygame.mixer.get_busy() and not self.alert_stop_event.is_set():
+                    time.sleep(0.1)
+        except Exception as e:
+            if "mixer not initialized" not in str(e):
+                 print(f"LỖI trong vòng lặp nguy hiểm: {e}")
+        
+        print("Đã thoát khỏi vòng lặp nguy hiểm.")
+
+    def update_and_reconnect(self, settings: dict):
+        self.broker, self.port = settings['broker'], int(settings['port'])
+        self.username, self.password = settings['username'], settings['password']
+        self.publish_topic = settings['publish']
+        self.subscribe_topics = [t for t in settings['topics'].splitlines() if t]
+        
+        self.warning_threshold = float(settings['warning_threshold'])
+        self.critical_threshold = float(settings['critical_threshold'])
+
+        self.save_config()
+        if self.listening:
+            self.toggle_off()
+            time.sleep(1)
+            self.toggle_on()
+
+    def load_config(self):
+        if not os.path.exists(CONFIG_FILE):
+            self._load_audio_files()
+            return
+        try:
+            self.config.read(CONFIG_FILE)
+            if "MQTT" in self.config:
+                mqtt_cfg = self.config["MQTT"]
+                self.broker = mqtt_cfg.get("broker", self.broker)
+                self.port = mqtt_cfg.getint("port", self.port)
+                self.username = mqtt_cfg.get("username", self.username)
+                self.password = mqtt_cfg.get("password", self.password)
+                self.subscribe_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
+                self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
+            if "Settings" in self.config:
+                settings_cfg = self.config["Settings"]
+                self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
+                self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
+            print("Đã tải cấu hình.")
+            self._load_audio_files()
+        except Exception as e:
+            print(f"Lỗi khi tải cấu hình từ {CONFIG_FILE}: {e}")
+
+    def save_config(self):
+        self.config['MQTT'] = {
+            'broker': self.broker, 'port': self.port, 'username': self.username,
+            'password': self.password, 'topics': "\n".join(self.subscribe_topics),
+            'publish': self.publish_topic
+        }
+        self.config['Settings'] = {
+            'warning_threshold': self.warning_threshold,
+            'critical_threshold': self.critical_threshold
+        }
+        try:
+            with open(CONFIG_FILE, 'w') as f: self.config.write(f)
+            print("Đã lưu cấu hình.")
+        except IOError as e:
+            print(f"Lỗi Lưu File: {e}")
+
+    def shutdown(self, silent=False):
+        if self.exiting: return
+        if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát...")
+        self.exiting = True
+        self.stop_event.set()
+        self.stop_all_alerts()
+        
+        if self.alert_thread and self.alert_thread.is_alive():
+            self.alert_thread.join(timeout=2)
+
+        try:
+            self.client.loop_stop(force=True)
+            self.client.disconnect()
+        except Exception: pass
+        try: GPIO.cleanup()
+        except Exception: pass
+        if not silent: print(" -> Backend đã dừng.")
+    
     def setup_gpio(self):
         try:
             GPIO.setmode(GPIO.BCM)
@@ -148,98 +336,6 @@ class Backend:
             print("Mất kết nối MQTT...")
             self.status_text, self.status_color = "Trạng thái: MẤT KẾT NỐI", "orange"
 
-    def on_message(self, client, userdata, msg):
-        if not self.listening or self.exiting: return
-        try:
-            data = json.loads(msg.payload.decode())
-            name = data.get("sensorname", msg.topic)
-            value = float(data.get("value", 0))
-            ts = float(data.get("timestamp", time.time()))
-            dt_object = datetime.fromtimestamp(ts)
-            
-            is_over_threshold = value > self.threshold
-            status = "VUOT MUC" if is_over_threshold else "AN TOAN"
-            record = (name, f"{value:.2f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
-            
-            self.sensor_data.append(record)
-            self.plot_data_points.append((dt_object, value))
-            self.gui_update_queue.put(record)
-
-            threading.Thread(target=self.flash_led, args=(self.led1_pin,), daemon=True).start()
-
-            # --- LOGIC CẢNH BÁO ÂM THANH MỚI ---
-            if is_over_threshold:
-                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
-                # Nếu cảnh báo chưa active, hãy kích hoạt nó
-                if not self.alert_active:
-                    self.alert_active = True
-                    self.alert_thread = threading.Thread(target=self._alert_sound_loop, daemon=True)
-                    self.alert_thread.start()
-            else:
-                # Nếu giá trị đã an toàn, tắt cảnh báo
-                if self.alert_active:
-                    self.alert_active = False # Gửi tín hiệu dừng cho luồng
-                    if self.mixer_initialized:
-                        pygame.mixer.stop() # Dừng ngay lập tức mọi âm thanh
-                    print("Điều kiện an toàn, đã dừng vòng lặp âm thanh.")
-            
-            if self.publish_topic:
-                self.client.publish(self.publish_topic, f"({value:.2f}, {status}, {int(ts)})")
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
-            print(f"Lỗi xử lý message: {e}")
-
-    def _alert_sound_loop(self):
-        """
-        Hàm này chạy trong một luồng riêng, lặp lại chuỗi âm thanh
-        (còi -> lời nói) cho đến khi cờ self.alert_active là False.
-        """
-        if not self.mixer_initialized:
-            print("Bỏ qua vòng lặp âm thanh: mixer chưa được khởi tạo.")
-            return
-
-        print("Bắt đầu vòng lặp âm thanh cảnh báo...")
-        
-        siren_path = self.siren_sound_path
-        warning_path = self.warning_sound_path
-
-        if not siren_path or not os.path.exists(siren_path):
-            print(f"LỖI: Không tìm thấy file còi: {siren_path}")
-            self.alert_active = False
-            return
-        if not warning_path or not os.path.exists(warning_path):
-            print(f"LỖI: Không tìm thấy file lời nói: {warning_path}")
-            self.alert_active = False
-            return
-
-        try:
-            siren_sound = pygame.mixer.Sound(siren_path)
-            warning_sound = pygame.mixer.Sound(warning_path)
-
-            while self.alert_active:
-                # 1. Phát tiếng còi
-                print(" -> Phát còi...")
-                siren_sound.play()
-                while pygame.mixer.get_busy() and self.alert_active:
-                    time.sleep(0.1)
-                
-                if not self.alert_active: break
-
-                # 2. Phát lời nói cảnh báo
-                print(" -> Phát lời nói cảnh báo...")
-                warning_sound.play()
-                while pygame.mixer.get_busy() and self.alert_active:
-                    time.sleep(0.1)
-
-                if not self.alert_active: break
-                
-                time.sleep(0.5)
-
-        except Exception as e:
-            print(f"LỖI trong vòng lặp âm thanh: {e}")
-        
-        print("Đã thoát khỏi vòng lặp âm thanh.")
-        self.alert_active = False
-
     def get_gui_updates(self):
         updates = []
         while not self.gui_update_queue.empty():
@@ -271,38 +367,13 @@ class Backend:
     def toggle_off(self):
         if not self.listening: return
         self.listening = False
-
-        # --- THÊM MỚI: Dừng cảnh báo âm thanh khi chuyển sang chế độ thủ công ---
-        if self.alert_active:
-            self.alert_active = False
-            if self.mixer_initialized:
-                pygame.mixer.stop()
-            print("Chuyển sang Thủ công, đã dừng cảnh báo âm thanh.")
-
         try:
             self.client.loop_stop()
             self.client.disconnect()
             print("Đã ngắt kết nối MQTT.")
         except Exception: pass
         self.status_text, self.status_color = "Trạng thái: THỦ CÔNG", "red"
-
-    def update_and_reconnect(self, settings: dict):
-        self.broker, self.port = settings['broker'], int(settings['port'])
-        self.username, self.password = settings['username'], settings['password']
-        self.publish_topic = settings['publish']
-        self.subscribe_topics = [t for t in settings['topics'].splitlines() if t]
-        self.threshold = float(settings['threshold'])
         
-        self.siren_sound_path = settings['siren_sound']
-        self.warning_sound_path = settings['warning_sound']
-
-        self.save_config()
-        if self.listening:
-            print("Đang ở chế độ tự động, áp dụng cấu hình MQTT mới...")
-            self.toggle_off()
-            time.sleep(1)
-            self.toggle_on()
-
     def check_leds(self):
         if self.listening:
             print("Không thể kiểm tra LED ở chế độ TỰ ĐỘNG.")
@@ -334,45 +405,7 @@ class Backend:
         self.plot_data_points.clear()
         self.gui_update_queue.put(DATA_CLEAR_SIGNAL)
         print("Đã xóa dữ liệu nền.")
-
-    def load_config(self):
-        if not os.path.exists(CONFIG_FILE): return
-        try:
-            self.config.read(CONFIG_FILE)
-            if "MQTT" in self.config:
-                mqtt_cfg = self.config["MQTT"]
-                self.broker = mqtt_cfg.get("broker", self.broker)
-                self.port = mqtt_cfg.getint("port", self.port)
-                self.username = mqtt_cfg.get("username", self.username)
-                self.password = mqtt_cfg.get("password", self.password)
-                self.subscribe_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
-                self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
-            if "Settings" in self.config:
-                settings_cfg = self.config["Settings"]
-                self.threshold = settings_cfg.getfloat("threshold", self.threshold)
-                self.siren_sound_path = settings_cfg.get("siren_sound_path", "")
-                self.warning_sound_path = settings_cfg.get("warning_sound_path", "")
-            print("Đã tải cấu hình.")
-        except Exception as e:
-            print(f"Lỗi khi tải cấu hình từ {CONFIG_FILE}: {e}")
-
-    def save_config(self):
-        self.config['MQTT'] = {
-            'broker': self.broker, 'port': self.port, 'username': self.username,
-            'password': self.password, 'topics': "\n".join(self.subscribe_topics),
-            'publish': self.publish_topic
-        }
-        self.config['Settings'] = {
-            'threshold': self.threshold,
-            'siren_sound_path': self.siren_sound_path,
-            'warning_sound_path': self.warning_sound_path
-        }
-        try:
-            with open(CONFIG_FILE, 'w') as f: self.config.write(f)
-            print("Đã lưu cấu hình.")
-        except IOError as e:
-            print(f"Lỗi Lưu File: {e}")
-
+        
     def save_session_data(self, silent=False):
         if not silent: print(" -> Đang lưu trạng thái hiện tại vào file...")
         try:
@@ -402,44 +435,6 @@ class Backend:
         finally:
             if os.path.exists(SESSION_FILE): os.remove(SESSION_FILE)
 
-    def shutdown(self, silent=False):
-        if self.exiting: return
-        if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát...")
-        self.exiting = True
-        self.stop_event.set()
-
-        # --- THAY ĐỔI: Dọn dẹp Pygame một cách an toàn ---
-        # 1. Gửi tín hiệu dừng cho luồng âm thanh và dừng phát ngay lập tức
-        self.alert_active = False
-        if self.mixer_initialized:
-            try:
-                pygame.mixer.stop()
-            except Exception as e:
-                print(f"Lỗi khi dừng pygame mixer: {e}")
-
-        # 2. Dừng các thành phần khác
-        try:
-            self.client.loop_stop(force=True)
-            self.client.disconnect()
-        except Exception: pass
-        try: GPIO.cleanup()
-        except Exception: pass
-
-        # 3. Chờ luồng âm thanh kết thúc (nếu nó đang chạy)
-        if self.alert_thread and self.alert_thread.is_alive():
-            self.alert_thread.join(timeout=1.0) # Chờ tối đa 1 giây
-
-        # 4. Thoát Pygame sau khi mọi thứ đã dừng
-        if self.mixer_initialized:
-            try:
-                pygame.quit() # Dọn dẹp tất cả các module pygame
-                self.mixer_initialized = False
-                print(" -> Pygame đã được dọn dẹp.")
-            except Exception as e:
-                print(f"Lỗi khi thoát pygame: {e}")
-        
-        if not silent: print(" -> Backend đã dừng.")
-
 # ==============================================================================
 # LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
 # ==============================================================================
@@ -465,6 +460,96 @@ class AppGUI:
         self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
+    def create_left_panel(self, parent):
+        left = ttk.LabelFrame(parent, text="Cài đặt MQTT & Ngưỡng", padding=10)
+        left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
+
+        def add_labeled_entry(frame, label, row, show=None):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
+            entry = ttk.Entry(frame, show=show)
+            entry.grid(row=row, column=1, sticky="ew", pady=3, columnspan=2)
+            return entry
+
+        self.broker_entry = add_labeled_entry(left, "MQTT Broker:", 0)
+        self.port_entry = add_labeled_entry(left, "Port:", 1)
+        self.user_entry = add_labeled_entry(left, "Username:", 2)
+        self.pass_entry = add_labeled_entry(left, "Password:", 3, show="*")
+        
+        show_btn = ttk.Button(left, text="👁", command=self.toggle_pass, width=2, bootstyle="light")
+        show_btn.grid(row=3, column=2, sticky="e", padx=(0,0))
+
+        self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
+
+        self.warning_threshold_entry = add_labeled_entry(left, "Ngưỡng Cảnh Báo (m):", 5)
+        self.critical_threshold_entry = add_labeled_entry(left, "Ngưỡng Nguy Hiểm (m):", 6)
+
+        ttk.Label(left, text="Subscribe Topics:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        self.topic_input = tk.Text(left, height=5, width=35, relief="solid", borderwidth=1)
+        self.topic_input.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
+        
+        left.grid_rowconfigure(8, weight=1)
+        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10,0))
+
+    def load_initial_data(self):
+        self.broker_entry.insert(0, self.backend.broker)
+        self.port_entry.insert(0, str(self.backend.port))
+        self.user_entry.insert(0, self.backend.username)
+        self.pass_entry.insert(0, self.backend.password)
+        self.pub_entry.insert(0, self.backend.publish_topic)
+        
+        self.warning_threshold_entry.insert(0, str(self.backend.warning_threshold))
+        self.critical_threshold_entry.insert(0, str(self.backend.critical_threshold))
+        
+        self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
+
+    def apply_and_save_config(self):
+        settings = {
+            'broker': self.broker_entry.get(), 
+            'port': self.port_entry.get(), 
+            'username': self.user_entry.get(), 
+            'password': self.pass_entry.get(), 
+            'topics': self.topic_input.get("1.0", "end").strip(), 
+            'publish': self.pub_entry.get(),
+            'warning_threshold': self.warning_threshold_entry.get(),
+            'critical_threshold': self.critical_threshold_entry.get()
+        }
+        try:
+            float(settings['warning_threshold']); float(settings['critical_threshold'])
+            self.backend.update_and_reconnect(settings)
+            messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
+        except ValueError as e: messagebox.showerror("Lỗi", f"Dữ liệu ngưỡng không hợp lệ: {e}", parent=self.root)
+        except Exception as e: messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
+
+    def periodic_update(self):
+        if not self.root.winfo_exists(): return
+        self.update_status_label()
+        new_updates = self.backend.get_gui_updates()
+        if new_updates:
+            if DATA_CLEAR_SIGNAL in new_updates:
+                self.sheet.set_sheet_data([])
+                if self.chart_window and self.chart_window.winfo_exists(): self.clear_chart_data()
+                print("GUI đã nhận tín hiệu và xóa bảng.")
+            else:
+                valid_records = [rec for rec in new_updates if isinstance(rec, tuple)]
+                if valid_records:
+                    self.sheet.insert_rows(valid_records)
+                    self.sheet.dehighlight_all()
+                    last_row_index = self.sheet.get_total_rows() - 1
+                    if last_row_index >= 0:
+                        self.sheet.see(row=last_row_index)
+                        self.sheet.deselect()
+                        last_record = valid_records[-1]
+                        status = last_record[2]
+                        if status == "NGUY HIEM":
+                            highlight_color = "#F8D7DA"
+                        elif status == "CANH BAO":
+                            highlight_color = "#FFF3CD"
+                        else:
+                            highlight_color = "#D4EDDA"
+                        self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
+            if self.chart_window and self.chart_window.winfo_exists(): self.update_plot()
+        self.root.after(250, self.periodic_update)
+
     def destroy_all_windows(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.destroy()
         if self.root and self.root.winfo_exists(): self.root.destroy()
@@ -486,47 +571,6 @@ class AppGUI:
         main.grid_rowconfigure(0, weight=1)
         self.create_left_panel(main)
         self.create_right_panel(main)
-
-    def create_left_panel(self, parent):
-        left = ttk.LabelFrame(parent, text="Cài đặt MQTT & Ngưỡng", padding=10)
-        left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
-
-        def add_labeled_entry(frame, label, row, show=None):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            entry = ttk.Entry(frame, show=show)
-            entry.grid(row=row, column=1, sticky="ew", pady=3, columnspan=2)
-            return entry
-
-        self.broker_entry = add_labeled_entry(left, "MQTT Broker:", 0)
-        self.port_entry = add_labeled_entry(left, "Port:", 1)
-        self.user_entry = add_labeled_entry(left, "Username:", 2)
-        self.pass_entry = add_labeled_entry(left, "Password:", 3, show="*")
-        
-        show_btn = ttk.Button(left, text="👁", command=self.toggle_pass, width=2, bootstyle="light")
-        show_btn.grid(row=3, column=2, sticky="e", padx=(0,0))
-
-        self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
-        self.threshold_entry = add_labeled_entry(left, "Ngưỡng (m):", 5)
-
-        # --- THAY ĐỔI: Thêm 2 trường chọn file âm thanh ---
-        def add_sound_selector(frame, label_text, row):
-            ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3)
-            entry = ttk.Entry(frame)
-            entry.grid(row=row, column=1, sticky="ew", pady=3)
-            button = ttk.Button(frame, text="Chọn...", width=8)
-            button.grid(row=row, column=2, sticky="e", padx=(5,0))
-            button.configure(command=lambda e=entry: self.select_sound_file(e))
-            return entry
-
-        self.siren_sound_entry = add_sound_selector(left, "Âm thanh Còi:", 6)
-        self.warning_sound_entry = add_sound_selector(left, "Lời nói Cảnh báo:", 7)
-
-        ttk.Label(left, text="Subscribe Topics:").grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.topic_input = tk.Text(left, height=4, width=35, relief="solid", borderwidth=1)
-        self.topic_input.grid(row=9, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
-        
-        left.grid_rowconfigure(9, weight=1)
-        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(10,0))
 
     def create_right_panel(self, parent):
         right = ttk.Frame(parent)
@@ -564,83 +608,12 @@ class AppGUI:
         led_panel.grid_columnconfigure(1, weight=1)
         ttk.Button(led_panel, text="Kiểm tra LED", command=self.on_check_led_click).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         ttk.Button(led_panel, text="Thoát", command=self.exit_program_graceful, bootstyle="secondary-outline").grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-
-    def load_initial_data(self):
-        self.broker_entry.insert(0, self.backend.broker)
-        self.port_entry.insert(0, str(self.backend.port))
-        self.user_entry.insert(0, self.backend.username)
-        self.pass_entry.insert(0, self.backend.password)
-        self.pub_entry.insert(0, self.backend.publish_topic)
-        self.threshold_entry.insert(0, str(self.backend.threshold))
-        
-        self.siren_sound_entry.insert(0, self.backend.siren_sound_path)
-        self.warning_sound_entry.insert(0, self.backend.warning_sound_path)
-
-        self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
     
-    def periodic_update(self):
-        if not self.root.winfo_exists(): return
-        self.update_status_label()
-        new_updates = self.backend.get_gui_updates()
-        if new_updates:
-            if DATA_CLEAR_SIGNAL in new_updates:
-                self.sheet.set_sheet_data([])
-                if self.chart_window and self.chart_window.winfo_exists(): self.clear_chart_data()
-                print("GUI đã nhận tín hiệu và xóa bảng.")
-            else:
-                valid_records = [rec for rec in new_updates if isinstance(rec, tuple)]
-                if valid_records:
-                    self.sheet.insert_rows(valid_records)
-                    self.sheet.dehighlight_all()
-                    last_row_index = self.sheet.get_total_rows() - 1
-                    if last_row_index >= 0:
-                        self.sheet.see(row=last_row_index)
-                        self.sheet.deselect()
-                        last_record = valid_records[-1]
-                        status = last_record[2]  
-                        if status == "VUOT MUC":
-                            highlight_color = "#F8D7DA"  
-                        else:
-                            highlight_color = "#D4EDDA" 
-                        self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
-            if self.chart_window and self.chart_window.winfo_exists(): self.update_plot()
-        self.root.after(250, self.periodic_update)
-
     def update_status_label(self):
         if self.status_label.cget("text") != self.backend.status_text or self.status_label.cget("foreground") != self.backend.status_color:
             self.status_label.config(text=self.backend.status_text, foreground=self.backend.status_color)
 
     def toggle_pass(self): self.pass_entry.config(show="" if self.pass_entry.cget("show") else "*")
-
-    def select_sound_file(self, target_entry: ttk.Entry):
-        """Mở hộp thoại để người dùng chọn file âm thanh và điền vào entry được chỉ định."""
-        filepath = filedialog.askopenfilename(
-            title="Chọn file âm thanh",
-            filetypes=[("Sound files", "*.mp3 *.wav"), ("All files", "*.*")],
-            parent=self.root
-        )
-        if filepath:
-            target_entry.delete(0, tk.END)
-            target_entry.insert(0, filepath)
-
-    def apply_and_save_config(self):
-        settings = {
-            'broker': self.broker_entry.get(), 
-            'port': self.port_entry.get(), 
-            'username': self.user_entry.get(), 
-            'password': self.pass_entry.get(), 
-            'topics': self.topic_input.get("1.0", "end").strip(), 
-            'publish': self.pub_entry.get(), 
-            'threshold': self.threshold_entry.get(),
-            'siren_sound': self.siren_sound_entry.get(),
-            'warning_sound': self.warning_sound_entry.get()
-        }
-        try:
-            int(settings['port']); float(settings['threshold'])
-            self.backend.update_and_reconnect(settings)
-            messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
-        except ValueError as e: messagebox.showerror("Lỗi", f"Dữ liệu không hợp lệ: {e}", parent=self.root)
-        except Exception as e: messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
 
     def on_check_led_click(self):
         if not self.backend.check_leds(): messagebox.showwarning("Cảnh báo", "Chỉ có thể kiểm tra LED ở chế độ THỦ CÔNG (OFF).", parent=self.root)
@@ -671,7 +644,6 @@ class AppGUI:
             if self.root.winfo_exists():
                 self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
 
-    # --- Các hàm biểu đồ (giữ nguyên, không thay đổi) ---
     def show_chart_window(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.lift(); return
         self.chart_window = tk.Toplevel(self.root)
@@ -724,9 +696,9 @@ class AppGUI:
             self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
             self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
         else:
-            indices, values, times, unit, threshold = self._prepare_plot_data(display_data_slice, start)
+            indices, values, times, unit, warning_thresh, critical_thresh = self._prepare_plot_data(display_data_slice, start)
             self._setup_plot_style(unit)
-            self._draw_plot_elements(indices, values, threshold, unit)
+            self._draw_plot_elements(indices, values, warning_thresh, critical_thresh, unit)
             self._configure_plot_axes(start, end, total_points, indices, times)
         self.canvas.draw()
 
@@ -741,17 +713,14 @@ class AppGUI:
             self.position_scale.config(state="normal")
             if self.auto_follow_var.get():
                 self.current_start_index = max(0, total_points - self.points_per_view)
-
         if total_points > self.points_per_view:
             max_start_idx = max(0, total_points - self.points_per_view)
             pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
         else:
             pos_percent = 100
-
         self._is_updating_slider = True
         self.position_scale.set(pos_percent)
         self._is_updating_slider = False
-    
         start = self.current_start_index
         end = min(total_points, start + self.points_per_view)
         return start, end
@@ -762,8 +731,9 @@ class AppGUI:
         indices = range(start_index, start_index + len(data_slice))
         values = [item[1] * conversion_factor for item in data_slice]
         times = [item[0] for item in data_slice]
-        threshold = self.backend.threshold * conversion_factor
-        return indices, values, times, unit, threshold
+        warning_thresh = self.backend.warning_threshold * conversion_factor
+        critical_thresh = self.backend.critical_threshold * conversion_factor
+        return indices, values, times, unit, warning_thresh, critical_thresh
 
     def _setup_plot_style(self, unit='Giá trị'):
         self.ax.set_title('Dữ liệu Cảm biến Theo Thời Gian', fontsize=14, fontweight='bold')
@@ -771,15 +741,27 @@ class AppGUI:
         self.ax.set_ylabel(f'Giá trị ({unit})', fontsize=12)
         self.ax.grid(True, which='major', linestyle='--', alpha=0.6)
 
-    def _draw_plot_elements(self, indices, values, threshold, unit):
-        safe_indices, safe_values = [], []; warn_indices, warn_values = [], []
+    def _draw_plot_elements(self, indices, values, warning_thresh, critical_thresh, unit):
+        safe_indices, warn_indices, crit_indices = [], [], []
+        safe_values, warn_values, crit_values = [], [], []
         for i, val in zip(indices, values):
-            (warn_indices if val > threshold else safe_indices).append(i)
-            (warn_values if val > threshold else safe_values).append(val)
+            if val >= critical_thresh:
+                crit_indices.append(i)
+                crit_values.append(val)
+            elif val >= warning_thresh:
+                warn_indices.append(i)
+                warn_values.append(val)
+            else:
+                safe_indices.append(i)
+                safe_values.append(val)
+
         self.ax.plot(indices, values, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=3)
         self.ax.scatter(safe_indices, safe_values, color='green', s=40, label='An toàn', zorder=5)
-        self.ax.scatter(warn_indices, warn_values, color='red', s=40, label='Vượt ngưỡng', zorder=5)
-        self.ax.axhline(y=threshold, color='darkorange', linestyle='--', linewidth=2, alpha=0.9, label=f'Ngưỡng ({threshold:.2f} {unit})')
+        self.ax.scatter(warn_indices, warn_values, color='orange', s=40, label='Cảnh báo', zorder=5)
+        self.ax.scatter(crit_indices, crit_values, color='red', s=40, label='Nguy hiểm', zorder=5)
+        
+        self.ax.axhline(y=warning_thresh, color='gold', linestyle='--', linewidth=2, alpha=0.9, label=f'Ngưỡng Cảnh báo ({warning_thresh:.2f} {unit})')
+        self.ax.axhline(y=critical_thresh, color='darkorange', linestyle='--', linewidth=2, alpha=0.9, label=f'Ngưỡng Nguy hiểm ({critical_thresh:.2f} {unit})')
 
     def _configure_plot_axes(self, start, end, total_points, indices, times):
         self.ax.set_xlim(left=start - 0.5, right=start + self.points_per_view - 0.5)
@@ -791,12 +773,13 @@ class AppGUI:
         elif len(indices) == 1:
             self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
         handles, labels = self.ax.get_legend_handles_labels()
-        self.ax.legend(dict(zip(labels, handles)).values(), dict(zip(labels, handles)).keys(), loc='upper left')
+        by_label = dict(zip(labels, handles))
+        self.ax.legend(by_label.values(), by_label.keys(), loc='upper left')
         self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
         try:
             self.fig.tight_layout()
         except (RecursionError, RuntimeError):
-            print("Cảnh báo: Lỗi tạm thời khi tính toán layout biểu đồ. Sẽ tự điều chỉnh ở lần cập nhật sau.")
+            print("Cảnh báo: Lỗi tạm thời khi tính toán layout biểu đồ.")
 
     def on_auto_follow_toggle(self):
         if self.auto_follow_var.get():
@@ -817,11 +800,9 @@ class AppGUI:
         self._slider_after_id = None
         if self.auto_follow_var.get():
             self.auto_follow_var.set(False)
-    
         total_points = len(self.backend.plot_data_points)
         if total_points <= self.points_per_view: 
             return
-        
         max_start_index = total_points - self.points_per_view
         self.current_start_index = int((float(value_str) / 100) * max_start_index)
         self.update_plot()
