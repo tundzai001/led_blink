@@ -20,6 +20,16 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import numpy as np
 
+# --- THÊM MỚI: Import và kiểm tra Pygame ---
+try:
+    import pygame
+    PYGAME_AVAILABLE = True
+except ImportError:
+    PYGAME_AVAILABLE = False
+    print("CẢNH BÁO: Thư viện 'pygame' chưa được cài đặt. Chức năng cảnh báo âm thanh sẽ bị vô hiệu hóa.")
+    print("Vui lòng cài đặt bằng lệnh: pip install pygame")
+
+
 # --- CÁC HẰNG SỐ TOÀN CỤC ---
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 CONFIG_FILE = 'config.ini'
@@ -49,7 +59,7 @@ if not IS_PI:
     GPIO = MockGPIO()
 
 # ==============================================================================
-# LỚP LOGIC NỀN (BACKEND) - Không thay đổi
+# LỚP LOGIC NỀN (BACKEND)
 # ==============================================================================
 class Backend:
     def __init__(self):
@@ -63,19 +73,37 @@ class Backend:
         self.subscribe_topics = []
         self.threshold = 1.1
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
-        
+        # --- THAY ĐỔI: Quản lý 2 file âm thanh và trạng thái cảnh báo ---
+        self.siren_sound_path = ""      # Đường dẫn file còi
+        self.warning_sound_path = ""    # Đường dẫn file lời nói
+        self.alert_active = False       # Cờ báo hiệu cảnh báo đang hoạt động
+        self.alert_thread = None        # Luồng xử lý vòng lặp âm thanh
+        self.mixer_initialized = False
         self.sensor_data = []
         self.plot_data_points = deque(maxlen=MAX_PLOT_POINTS)
         self.gui_update_queue = queue.Queue()
-
         self.client = mqtt.Client(protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message
         self.stop_event = threading.Event()
 
+        self.setup_audio_mixer()
         self.setup_gpio()
         self.load_config()
+
+    def setup_audio_mixer(self):
+        """Khởi tạo Pygame mixer để sẵn sàng phát âm thanh."""
+        if not PYGAME_AVAILABLE:
+            return
+        try:
+            # Tăng kích thước buffer để giảm lỗi 'underrun' trên các hệ thống yếu
+            pygame.mixer.init(buffer=4096)
+            self.mixer_initialized = True
+            print("Pygame mixer đã khởi tạo thành công.")
+        except Exception as e:
+            print(f"LỖI: Không thể khởi tạo pygame mixer: {e}")
+            self.mixer_initialized = False
 
     def setup_gpio(self):
         try:
@@ -138,13 +166,79 @@ class Backend:
             self.gui_update_queue.put(record)
 
             threading.Thread(target=self.flash_led, args=(self.led1_pin,), daemon=True).start()
+
+            # --- LOGIC CẢNH BÁO ÂM THANH MỚI ---
             if is_over_threshold:
                 threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
+                # Nếu cảnh báo chưa active, hãy kích hoạt nó
+                if not self.alert_active:
+                    self.alert_active = True
+                    self.alert_thread = threading.Thread(target=self._alert_sound_loop, daemon=True)
+                    self.alert_thread.start()
+            else:
+                # Nếu giá trị đã an toàn, tắt cảnh báo
+                if self.alert_active:
+                    self.alert_active = False # Gửi tín hiệu dừng cho luồng
+                    if self.mixer_initialized:
+                        pygame.mixer.stop() # Dừng ngay lập tức mọi âm thanh
+                    print("Điều kiện an toàn, đã dừng vòng lặp âm thanh.")
             
             if self.publish_topic:
                 self.client.publish(self.publish_topic, f"({value:.2f}, {status}, {int(ts)})")
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"Lỗi xử lý message: {e}")
+
+    def _alert_sound_loop(self):
+        """
+        Hàm này chạy trong một luồng riêng, lặp lại chuỗi âm thanh
+        (còi -> lời nói) cho đến khi cờ self.alert_active là False.
+        """
+        if not self.mixer_initialized:
+            print("Bỏ qua vòng lặp âm thanh: mixer chưa được khởi tạo.")
+            return
+
+        print("Bắt đầu vòng lặp âm thanh cảnh báo...")
+        
+        siren_path = self.siren_sound_path
+        warning_path = self.warning_sound_path
+
+        if not siren_path or not os.path.exists(siren_path):
+            print(f"LỖI: Không tìm thấy file còi: {siren_path}")
+            self.alert_active = False
+            return
+        if not warning_path or not os.path.exists(warning_path):
+            print(f"LỖI: Không tìm thấy file lời nói: {warning_path}")
+            self.alert_active = False
+            return
+
+        try:
+            siren_sound = pygame.mixer.Sound(siren_path)
+            warning_sound = pygame.mixer.Sound(warning_path)
+
+            while self.alert_active:
+                # 1. Phát tiếng còi
+                print(" -> Phát còi...")
+                siren_sound.play()
+                while pygame.mixer.get_busy() and self.alert_active:
+                    time.sleep(0.1)
+                
+                if not self.alert_active: break
+
+                # 2. Phát lời nói cảnh báo
+                print(" -> Phát lời nói cảnh báo...")
+                warning_sound.play()
+                while pygame.mixer.get_busy() and self.alert_active:
+                    time.sleep(0.1)
+
+                if not self.alert_active: break
+                
+                time.sleep(0.5)
+
+        except Exception as e:
+            print(f"LỖI trong vòng lặp âm thanh: {e}")
+        
+        print("Đã thoát khỏi vòng lặp âm thanh.")
+        self.alert_active = False
 
     def get_gui_updates(self):
         updates = []
@@ -177,6 +271,14 @@ class Backend:
     def toggle_off(self):
         if not self.listening: return
         self.listening = False
+
+        # --- THÊM MỚI: Dừng cảnh báo âm thanh khi chuyển sang chế độ thủ công ---
+        if self.alert_active:
+            self.alert_active = False
+            if self.mixer_initialized:
+                pygame.mixer.stop()
+            print("Chuyển sang Thủ công, đã dừng cảnh báo âm thanh.")
+
         try:
             self.client.loop_stop()
             self.client.disconnect()
@@ -190,6 +292,10 @@ class Backend:
         self.publish_topic = settings['publish']
         self.subscribe_topics = [t for t in settings['topics'].splitlines() if t]
         self.threshold = float(settings['threshold'])
+        
+        self.siren_sound_path = settings['siren_sound']
+        self.warning_sound_path = settings['warning_sound']
+
         self.save_config()
         if self.listening:
             print("Đang ở chế độ tự động, áp dụng cấu hình MQTT mới...")
@@ -242,7 +348,10 @@ class Backend:
                 self.subscribe_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
             if "Settings" in self.config:
-                self.threshold = self.config["Settings"].getfloat("threshold", self.threshold)
+                settings_cfg = self.config["Settings"]
+                self.threshold = settings_cfg.getfloat("threshold", self.threshold)
+                self.siren_sound_path = settings_cfg.get("siren_sound_path", "")
+                self.warning_sound_path = settings_cfg.get("warning_sound_path", "")
             print("Đã tải cấu hình.")
         except Exception as e:
             print(f"Lỗi khi tải cấu hình từ {CONFIG_FILE}: {e}")
@@ -253,7 +362,11 @@ class Backend:
             'password': self.password, 'topics': "\n".join(self.subscribe_topics),
             'publish': self.publish_topic
         }
-        self.config['Settings'] = {'threshold': self.threshold}
+        self.config['Settings'] = {
+            'threshold': self.threshold,
+            'siren_sound_path': self.siren_sound_path,
+            'warning_sound_path': self.warning_sound_path
+        }
         try:
             with open(CONFIG_FILE, 'w') as f: self.config.write(f)
             print("Đã lưu cấu hình.")
@@ -294,12 +407,37 @@ class Backend:
         if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát...")
         self.exiting = True
         self.stop_event.set()
+
+        # --- THAY ĐỔI: Dọn dẹp Pygame một cách an toàn ---
+        # 1. Gửi tín hiệu dừng cho luồng âm thanh và dừng phát ngay lập tức
+        self.alert_active = False
+        if self.mixer_initialized:
+            try:
+                pygame.mixer.stop()
+            except Exception as e:
+                print(f"Lỗi khi dừng pygame mixer: {e}")
+
+        # 2. Dừng các thành phần khác
         try:
             self.client.loop_stop(force=True)
             self.client.disconnect()
         except Exception: pass
         try: GPIO.cleanup()
         except Exception: pass
+
+        # 3. Chờ luồng âm thanh kết thúc (nếu nó đang chạy)
+        if self.alert_thread and self.alert_thread.is_alive():
+            self.alert_thread.join(timeout=1.0) # Chờ tối đa 1 giây
+
+        # 4. Thoát Pygame sau khi mọi thứ đã dừng
+        if self.mixer_initialized:
+            try:
+                pygame.quit() # Dọn dẹp tất cả các module pygame
+                self.mixer_initialized = False
+                print(" -> Pygame đã được dọn dẹp.")
+            except Exception as e:
+                print(f"Lỗi khi thoát pygame: {e}")
+        
         if not silent: print(" -> Backend đã dừng.")
 
 # ==============================================================================
@@ -370,12 +508,25 @@ class AppGUI:
         self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
         self.threshold_entry = add_labeled_entry(left, "Ngưỡng (m):", 5)
 
-        ttk.Label(left, text="Subscribe Topics:").grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.topic_input = tk.Text(left, height=6, width=35, relief="solid", borderwidth=1)
-        self.topic_input.grid(row=7, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
+        # --- THAY ĐỔI: Thêm 2 trường chọn file âm thanh ---
+        def add_sound_selector(frame, label_text, row):
+            ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3)
+            entry = ttk.Entry(frame)
+            entry.grid(row=row, column=1, sticky="ew", pady=3)
+            button = ttk.Button(frame, text="Chọn...", width=8)
+            button.grid(row=row, column=2, sticky="e", padx=(5,0))
+            button.configure(command=lambda e=entry: self.select_sound_file(e))
+            return entry
+
+        self.siren_sound_entry = add_sound_selector(left, "Âm thanh Còi:", 6)
+        self.warning_sound_entry = add_sound_selector(left, "Lời nói Cảnh báo:", 7)
+
+        ttk.Label(left, text="Subscribe Topics:").grid(row=8, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        self.topic_input = tk.Text(left, height=4, width=35, relief="solid", borderwidth=1)
+        self.topic_input.grid(row=9, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
         
-        left.grid_rowconfigure(7, weight=1)
-        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=8, column=0, columnspan=3, sticky="ew", pady=(10,0))
+        left.grid_rowconfigure(9, weight=1)
+        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(10,0))
 
     def create_right_panel(self, parent):
         right = ttk.Frame(parent)
@@ -421,6 +572,10 @@ class AppGUI:
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
         self.threshold_entry.insert(0, str(self.backend.threshold))
+        
+        self.siren_sound_entry.insert(0, self.backend.siren_sound_path)
+        self.warning_sound_entry.insert(0, self.backend.warning_sound_path)
+
         self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
     
     def periodic_update(self):
@@ -457,8 +612,29 @@ class AppGUI:
 
     def toggle_pass(self): self.pass_entry.config(show="" if self.pass_entry.cget("show") else "*")
 
+    def select_sound_file(self, target_entry: ttk.Entry):
+        """Mở hộp thoại để người dùng chọn file âm thanh và điền vào entry được chỉ định."""
+        filepath = filedialog.askopenfilename(
+            title="Chọn file âm thanh",
+            filetypes=[("Sound files", "*.mp3 *.wav"), ("All files", "*.*")],
+            parent=self.root
+        )
+        if filepath:
+            target_entry.delete(0, tk.END)
+            target_entry.insert(0, filepath)
+
     def apply_and_save_config(self):
-        settings = {'broker': self.broker_entry.get(), 'port': self.port_entry.get(), 'username': self.user_entry.get(), 'password': self.pass_entry.get(), 'topics': self.topic_input.get("1.0", "end").strip(), 'publish': self.pub_entry.get(), 'threshold': self.threshold_entry.get()}
+        settings = {
+            'broker': self.broker_entry.get(), 
+            'port': self.port_entry.get(), 
+            'username': self.user_entry.get(), 
+            'password': self.pass_entry.get(), 
+            'topics': self.topic_input.get("1.0", "end").strip(), 
+            'publish': self.pub_entry.get(), 
+            'threshold': self.threshold_entry.get(),
+            'siren_sound': self.siren_sound_entry.get(),
+            'warning_sound': self.warning_sound_entry.get()
+        }
         try:
             int(settings['port']); float(settings['threshold'])
             self.backend.update_and_reconnect(settings)
@@ -495,7 +671,7 @@ class AppGUI:
             if self.root.winfo_exists():
                 self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
 
-    # --- Các hàm biểu đồ ---
+    # --- Các hàm biểu đồ (giữ nguyên, không thay đổi) ---
     def show_chart_window(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.lift(); return
         self.chart_window = tk.Toplevel(self.root)
@@ -511,6 +687,7 @@ class AppGUI:
         self.auto_follow_var = tk.BooleanVar(value=True)
         auto_follow_check = ttk.Checkbutton(top_frame, text="Tự động theo dõi", variable=self.auto_follow_var, command=self.on_auto_follow_toggle)
         auto_follow_check.pack(side=tk.LEFT, padx=20)
+        self.current_start_index = 0
         chart_frame = ttk.Frame(self.chart_window, padding=(10, 5))
         chart_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         self.fig = Figure(figsize=(9, 4.5), dpi=100)
@@ -528,19 +705,24 @@ class AppGUI:
 
     def clear_chart_data(self):
         self.current_start_index = 0
+        if hasattr(self, 'auto_follow_var'):
+            self.auto_follow_var.set(True)
         self.update_plot()
 
     def update_plot(self):
         if not (self.chart_window and self.chart_window.winfo_exists()): return
         all_data = list(self.backend.plot_data_points)
         total_points = len(all_data)
+        if total_points > self.points_per_view:
+            max_start = total_points - self.points_per_view
+            self.current_start_index = min(self.current_start_index, max_start)
         start, end = self._update_slider_and_indices(total_points)
         display_data_slice = all_data[start:end]
         self.ax.clear()
         self._setup_plot_style()
         if not display_data_slice:
             self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
-            self.info_label.config(text="Hiển thị: 0/0 điểm")
+            self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
         else:
             indices, values, times, unit, threshold = self._prepare_plot_data(display_data_slice, start)
             self._setup_plot_style(unit)
@@ -552,16 +734,24 @@ class AppGUI:
         if total_points <= self.points_per_view:
             self.position_scale.config(state="disabled")
             self.current_start_index = 0
+            self._is_updating_slider = True
+            self.position_scale.set(0)
+            self._is_updating_slider = False
         else:
             self.position_scale.config(state="normal")
             if self.auto_follow_var.get():
                 self.current_start_index = max(0, total_points - self.points_per_view)
 
-        max_start_idx = max(0, total_points - self.points_per_view)
-        pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
+        if total_points > self.points_per_view:
+            max_start_idx = max(0, total_points - self.points_per_view)
+            pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
+        else:
+            pos_percent = 100
+
         self._is_updating_slider = True
         self.position_scale.set(pos_percent)
         self._is_updating_slider = False
+    
         start = self.current_start_index
         end = min(total_points, start + self.points_per_view)
         return start, end
@@ -602,14 +792,20 @@ class AppGUI:
             self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
         handles, labels = self.ax.get_legend_handles_labels()
         self.ax.legend(dict(zip(labels, handles)).values(), dict(zip(labels, handles)).keys(), loc='upper left')
-        self.info_label.config(text=f"Hiển thị: {end - start}/{total_points} điểm")
+        self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
         try:
             self.fig.tight_layout()
         except (RecursionError, RuntimeError):
             print("Cảnh báo: Lỗi tạm thời khi tính toán layout biểu đồ. Sẽ tự điều chỉnh ở lần cập nhật sau.")
 
     def on_auto_follow_toggle(self):
-        if self.auto_follow_var.get(): self.update_plot()
+        if self.auto_follow_var.get():
+            total_points = len(self.backend.plot_data_points)
+            if total_points > self.points_per_view:
+                self.current_start_index = max(0, total_points - self.points_per_view)
+            else: 
+                self.current_start_index = 0
+            self.update_plot()
 
     def on_slider_change(self, value_str):
         if self._is_updating_slider: return
@@ -618,10 +814,14 @@ class AppGUI:
         self._slider_after_id = self.root.after(100, lambda v=value_str: self._perform_slider_update(v))
 
     def _perform_slider_update(self, value_str):
-        self._slider_after_id = None # Đặt lại ID
-        self.auto_follow_var.set(False)
+        self._slider_after_id = None
+        if self.auto_follow_var.get():
+            self.auto_follow_var.set(False)
+    
         total_points = len(self.backend.plot_data_points)
-        if total_points <= self.points_per_view: return
+        if total_points <= self.points_per_view: 
+            return
+        
         max_start_index = total_points - self.points_per_view
         self.current_start_index = int((float(value_str) / 100) * max_start_index)
         self.update_plot()
