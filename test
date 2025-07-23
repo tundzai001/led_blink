@@ -97,7 +97,8 @@ class Backend:
         if not PYGAME_AVAILABLE:
             return
         try:
-            pygame.mixer.init()
+            # Tăng kích thước buffer để giảm lỗi 'underrun' trên các hệ thống yếu
+            pygame.mixer.init(buffer=4096)
             self.mixer_initialized = True
             print("Pygame mixer đã khởi tạo thành công.")
         except Exception as e:
@@ -270,6 +271,14 @@ class Backend:
     def toggle_off(self):
         if not self.listening: return
         self.listening = False
+
+        # --- THÊM MỚI: Dừng cảnh báo âm thanh khi chuyển sang chế độ thủ công ---
+        if self.alert_active:
+            self.alert_active = False
+            if self.mixer_initialized:
+                pygame.mixer.stop()
+            print("Chuyển sang Thủ công, đã dừng cảnh báo âm thanh.")
+
         try:
             self.client.loop_stop()
             self.client.disconnect()
@@ -398,12 +407,37 @@ class Backend:
         if not silent: print("\nBắt đầu quá trình dọn dẹp để thoát...")
         self.exiting = True
         self.stop_event.set()
+
+        # --- THAY ĐỔI: Dọn dẹp Pygame một cách an toàn ---
+        # 1. Gửi tín hiệu dừng cho luồng âm thanh và dừng phát ngay lập tức
+        self.alert_active = False
+        if self.mixer_initialized:
+            try:
+                pygame.mixer.stop()
+            except Exception as e:
+                print(f"Lỗi khi dừng pygame mixer: {e}")
+
+        # 2. Dừng các thành phần khác
         try:
             self.client.loop_stop(force=True)
             self.client.disconnect()
         except Exception: pass
         try: GPIO.cleanup()
         except Exception: pass
+
+        # 3. Chờ luồng âm thanh kết thúc (nếu nó đang chạy)
+        if self.alert_thread and self.alert_thread.is_alive():
+            self.alert_thread.join(timeout=1.0) # Chờ tối đa 1 giây
+
+        # 4. Thoát Pygame sau khi mọi thứ đã dừng
+        if self.mixer_initialized:
+            try:
+                pygame.quit() # Dọn dẹp tất cả các module pygame
+                self.mixer_initialized = False
+                print(" -> Pygame đã được dọn dẹp.")
+            except Exception as e:
+                print(f"Lỗi khi thoát pygame: {e}")
+        
         if not silent: print(" -> Backend đã dừng.")
 
 # ==============================================================================
