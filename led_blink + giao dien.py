@@ -526,7 +526,7 @@ class AppGUI:
         
         self.chart_window = tk.Toplevel(self.root)
         self.chart_window.title("Biểu đồ Dữ liệu Cảm biến")
-        self.chart_window.geometry("1200x800")
+        self.chart_window.geometry("900x650")
         self.chart_window.protocol("WM_DELETE_WINDOW", self.on_chart_close)
         
         top_frame = ttk.Frame(self.chart_window, padding=(10, 5))
@@ -544,19 +544,23 @@ class AppGUI:
         chart_frame = ttk.Frame(self.chart_window, padding=(10, 5))
         chart_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        self.fig = Figure(figsize=(12, 6), dpi=100)
+        self.fig = Figure(figsize=(9, 4.5), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         slider_frame = ttk.Frame(self.chart_window, padding=10)
         slider_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        self.info_label = ttk.Label(slider_frame, text="Tổng điểm: 0 | Hiển thị: 0-0", font=("Arial", 9))
-        self.info_label.pack(side=tk.TOP)
+
+        # Thanh trượt (slider) để điều hướng dữ liệu, nằm phía trên nhãn thông tin
         self.position_var = tk.DoubleVar()
         self.position_scale = ttk.Scale(slider_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=self.position_var, command=self.on_slider_change)
-        self.position_scale.pack(side=tk.TOP, fill=tk.X, expand=True, pady=(5,0))
+        self.position_scale.pack(side=tk.TOP, fill=tk.X, expand=True)
         
+        # Nhãn thông tin về tổng số điểm và phạm vi hiển thị
+        self.info_label = ttk.Label(slider_frame, text="Tổng điểm: 0 | Hiển thị: 0-0", font=("Arial", 9))
+        self.info_label.pack(side=tk.TOP, pady=(5, 0))
+
         self.update_plot()
 
     def clear_chart_data(self):
@@ -644,7 +648,12 @@ class AppGUI:
         handles, labels = self.ax.get_legend_handles_labels()
         self.ax.legend(dict(zip(labels, handles)).values(), dict(zip(labels, handles)).keys(), loc='upper left')
         self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
-        self.fig.tight_layout()
+        try:
+            self.fig.tight_layout()
+        except (RecursionError, RuntimeError):
+            # Lỗi này có thể xảy ra không liên tục với engine layout của matplotlib.
+            # Chúng ta bắt lỗi này để ngăn chặn sự cố; layout sẽ tự sửa ở lần vẽ tiếp theo.
+            print("Cảnh báo: Lỗi tạm thời khi tính toán layout biểu đồ. Sẽ tự điều chỉnh ở lần cập nhật sau.")
 
     def on_auto_follow_toggle(self):
         if self.auto_follow_var.get(): self.update_plot()
