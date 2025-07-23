@@ -319,6 +319,8 @@ class AppGUI:
         self.current_start_index = 0
         
         self.last_highlighted_row = None
+        self._is_updating_slider = False
+        self._slider_after_id = None 
 
         self.create_widgets()
         self.load_initial_data()
@@ -389,30 +391,22 @@ class AppGUI:
         
         self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"], show_row_index=True)
         self.sheet.pack(fill=tk.BOTH, expand=True)
-        
-        # ### FIX ###: GIẢI PHÁP TRIỆT ĐỂ
-        # Tắt tất cả các tương tác không cần thiết (kéo, sửa, click...)
         self.sheet.disable_bindings()
-
         self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
-
         self.create_control_panel(right)
 
     def create_control_panel(self, parent_frame):
         bottom_part = ttk.Frame(parent_frame)
         bottom_part.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-
         ctrl = ttk.Frame(bottom_part)
         ctrl.pack(side=tk.TOP, fill=tk.X, expand=True)
         for i in range(5): ctrl.grid_columnconfigure(i, weight=1)
-
         ttk.Button(ctrl, text="Tự động (ON)", command=self.backend.toggle_on, bootstyle="success").grid(row=0, column=0, padx=2, sticky="ew")
         ttk.Button(ctrl, text="Thủ công (OFF)", command=self.backend.toggle_off, bootstyle="danger").grid(row=0, column=1, padx=2, sticky="ew")
         self.save_csv_button = ttk.Button(ctrl, text="Lưu CSV", command=self.save_to_csv, bootstyle="info")
         self.save_csv_button.grid(row=0, column=2, padx=2, sticky="ew")
         ttk.Button(ctrl, text="Xóa Dữ Liệu", command=self.clear_table_gui, bootstyle="warning").grid(row=0, column=3, padx=2, sticky="ew")
         ttk.Button(ctrl, text="Xem Biểu Đồ", command=self.show_chart_window, bootstyle="primary").grid(row=0, column=4, padx=2, sticky="ew")
-
         led_panel = ttk.LabelFrame(bottom_part, text="Kiểm tra Thiết bị", padding=5)
         led_panel.pack(side=tk.TOP, fill=tk.X, expand=True, pady=(10, 0))
         led_panel.grid_columnconfigure(0, weight=3)
@@ -433,7 +427,6 @@ class AppGUI:
         if not self.root.winfo_exists(): return
         self.update_status_label()
         new_updates = self.backend.get_gui_updates()
-        
         if new_updates:
             if DATA_CLEAR_SIGNAL in new_updates:
                 self.sheet.set_sheet_data([])
@@ -442,35 +435,20 @@ class AppGUI:
             else:
                 valid_records = [rec for rec in new_updates if isinstance(rec, tuple)]
                 if valid_records:
-                    # Chèn dữ liệu mới vào bảng
                     self.sheet.insert_rows(valid_records)
-
-                    # Xóa tất cả các màu nền highlight cũ
                     self.sheet.dehighlight_all()
-                    
-                    # Lấy chỉ số của dòng cuối cùng (dòng mới nhất)
                     last_row_index = self.sheet.get_total_rows() - 1
-
                     if last_row_index >= 0:
-                        # Cuộn tới dòng mới nhất (hành động này không còn gây ra vấn đề thị giác)
                         self.sheet.see(row=last_row_index)
-
-                        # Bỏ chọn tất cả các ô để loại bỏ màu nền lựa chọn (màu xanh)
                         self.sheet.deselect()
-
-                        # Lấy bản ghi cuối cùng để xác định màu
                         last_record = valid_records[-1]
-                        status = last_record[2]  # Trạng thái ở cột thứ 3 (index 2)
-
-                        # Chọn màu dựa trên trạng thái
+                        status = last_record[2]  
                         if status == "VUOT MUC":
-                            highlight_color = "#F8D7DA"  # Màu đỏ nhạt
+                            highlight_color = "#F8D7DA"  
                         else:
-                            highlight_color = "#D4EDDA"  # Màu xanh lá nhạt
+                            highlight_color = "#D4EDDA" 
                         self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
-                        
             if self.chart_window and self.chart_window.winfo_exists(): self.update_plot()
-        
         self.root.after(250, self.periodic_update)
 
     def update_status_label(self):
@@ -501,7 +479,6 @@ class AppGUI:
             self.save_csv_button.config(state="disabled")
             threading.Thread(target=self._write_csv_in_background, args=(path, list(self.backend.sensor_data)), daemon=True).start()
 
-
     def _write_csv_in_background(self, path, data_to_save):
         try:
             import csv
@@ -511,11 +488,9 @@ class AppGUI:
                 writer.writerows(data_to_save)
             if self.root.winfo_exists():
                 self.root.after(0, lambda p=path: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {os.path.basename(p)}", parent=self.root))
-
         except Exception as e:
             if self.root.winfo_exists():
                 self.root.after(0, lambda err=e: messagebox.showerror("Lỗi", f"Không thể lưu file:\n\n{err}", parent=self.root))
-
         finally:
             if self.root.winfo_exists():
                 self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
@@ -523,44 +498,32 @@ class AppGUI:
     # --- Các hàm biểu đồ ---
     def show_chart_window(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.lift(); return
-        
         self.chart_window = tk.Toplevel(self.root)
         self.chart_window.title("Biểu đồ Dữ liệu Cảm biến")
         self.chart_window.geometry("900x650")
         self.chart_window.protocol("WM_DELETE_WINDOW", self.on_chart_close)
-        
         top_frame = ttk.Frame(self.chart_window, padding=(10, 5))
         top_frame.pack(side=tk.TOP, fill=tk.X)
-        
         ttk.Label(top_frame, text="Chọn đơn vị:").pack(side=tk.LEFT, padx=(0, 5))
         self.unit_selector = ttk.Combobox(top_frame, state="readonly", values=list(self.CONVERSION_FACTORS.keys()))
         self.unit_selector.set("m"); self.unit_selector.pack(side=tk.LEFT, padx=5)
         self.unit_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
-        
         self.auto_follow_var = tk.BooleanVar(value=True)
         auto_follow_check = ttk.Checkbutton(top_frame, text="Tự động theo dõi", variable=self.auto_follow_var, command=self.on_auto_follow_toggle)
         auto_follow_check.pack(side=tk.LEFT, padx=20)
-        
         chart_frame = ttk.Frame(self.chart_window, padding=(10, 5))
         chart_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
         self.fig = Figure(figsize=(9, 4.5), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
         self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
         slider_frame = ttk.Frame(self.chart_window, padding=10)
         slider_frame.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # Thanh trượt (slider) để điều hướng dữ liệu, nằm phía trên nhãn thông tin
         self.position_var = tk.DoubleVar()
         self.position_scale = ttk.Scale(slider_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=self.position_var, command=self.on_slider_change)
         self.position_scale.pack(side=tk.TOP, fill=tk.X, expand=True)
-        
-        # Nhãn thông tin về tổng số điểm và phạm vi hiển thị
         self.info_label = ttk.Label(slider_frame, text="Tổng điểm: 0 | Hiển thị: 0-0", font=("Arial", 9))
         self.info_label.pack(side=tk.TOP, pady=(5, 0))
-
         self.update_plot()
 
     def clear_chart_data(self):
@@ -569,16 +532,12 @@ class AppGUI:
 
     def update_plot(self):
         if not (self.chart_window and self.chart_window.winfo_exists()): return
-        
         all_data = list(self.backend.plot_data_points)
         total_points = len(all_data)
-
         start, end = self._update_slider_and_indices(total_points)
         display_data_slice = all_data[start:end]
-        
         self.ax.clear()
         self._setup_plot_style()
-        
         if not display_data_slice:
             self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
             self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
@@ -587,7 +546,6 @@ class AppGUI:
             self._setup_plot_style(unit)
             self._draw_plot_elements(indices, values, threshold, unit)
             self._configure_plot_axes(start, end, total_points, indices, times)
-            
         self.canvas.draw()
 
     def _update_slider_and_indices(self, total_points):
@@ -601,8 +559,9 @@ class AppGUI:
 
         max_start_idx = max(0, total_points - self.points_per_view)
         pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
+        self._is_updating_slider = True
         self.position_scale.set(pos_percent)
-            
+        self._is_updating_slider = False
         start = self.current_start_index
         end = min(total_points, start + self.points_per_view)
         return start, end
@@ -610,7 +569,6 @@ class AppGUI:
     def _prepare_plot_data(self, data_slice, start_index):
         unit = self.unit_selector.get()
         conversion_factor = self.CONVERSION_FACTORS.get(unit, 1.0)
-        
         indices = range(start_index, start_index + len(data_slice))
         values = [item[1] * conversion_factor for item in data_slice]
         times = [item[0] for item in data_slice]
@@ -628,7 +586,6 @@ class AppGUI:
         for i, val in zip(indices, values):
             (warn_indices if val > threshold else safe_indices).append(i)
             (warn_values if val > threshold else safe_values).append(val)
-
         self.ax.plot(indices, values, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=3)
         self.ax.scatter(safe_indices, safe_values, color='green', s=40, label='An toàn', zorder=5)
         self.ax.scatter(warn_indices, warn_values, color='red', s=40, label='Vượt ngưỡng', zorder=5)
@@ -636,7 +593,6 @@ class AppGUI:
 
     def _configure_plot_axes(self, start, end, total_points, indices, times):
         self.ax.set_xlim(left=start - 0.5, right=start + self.points_per_view - 0.5)
-
         num_ticks = min(len(indices), 8)
         if num_ticks > 1:
             tick_indices_in_slice = np.linspace(0, len(indices) - 1, num_ticks, dtype=int)
@@ -644,30 +600,36 @@ class AppGUI:
             self.ax.set_xticklabels([times[i].strftime('%H:%M:%S') for i in tick_indices_in_slice], rotation=45, ha='right')
         elif len(indices) == 1:
             self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
-        
         handles, labels = self.ax.get_legend_handles_labels()
         self.ax.legend(dict(zip(labels, handles)).values(), dict(zip(labels, handles)).keys(), loc='upper left')
         self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
         try:
             self.fig.tight_layout()
         except (RecursionError, RuntimeError):
-            # Lỗi này có thể xảy ra không liên tục với engine layout của matplotlib.
-            # Chúng ta bắt lỗi này để ngăn chặn sự cố; layout sẽ tự sửa ở lần vẽ tiếp theo.
             print("Cảnh báo: Lỗi tạm thời khi tính toán layout biểu đồ. Sẽ tự điều chỉnh ở lần cập nhật sau.")
 
     def on_auto_follow_toggle(self):
         if self.auto_follow_var.get(): self.update_plot()
 
     def on_slider_change(self, value_str):
+        if self._is_updating_slider: return
+        if self._slider_after_id:
+            self.root.after_cancel(self._slider_after_id)
+        self._slider_after_id = self.root.after(100, lambda v=value_str: self._perform_slider_update(v))
+
+    def _perform_slider_update(self, value_str):
+        self._slider_after_id = None # Đặt lại ID
         self.auto_follow_var.set(False)
         total_points = len(self.backend.plot_data_points)
         if total_points <= self.points_per_view: return
-            
         max_start_index = total_points - self.points_per_view
         self.current_start_index = int((float(value_str) / 100) * max_start_index)
         self.update_plot()
 
     def on_chart_close(self):
+        if self._slider_after_id:
+            self.root.after_cancel(self._slider_after_id)
+            self._slider_after_id = None
         plt.close(self.fig)
         self.chart_window.destroy()
         self.chart_window = None
