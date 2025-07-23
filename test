@@ -152,20 +152,22 @@ class Backend:
             elif value >= self.warning_threshold:
                 new_level = 1
 
+            # Nếu cấp độ thay đổi, dừng các cảnh báo đang chạy và bắt đầu vòng lặp mới nếu cần
             if new_level != self.current_alert_level:
                 print(f"Chuyển đổi cấp độ cảnh báo: {self.current_alert_level} -> {new_level}")
                 self.stop_all_alerts()
 
-                if new_level == 1:
-                    if self.warning_sound:
-                        print(" -> Phát cảnh báo sớm (một lần).")
-                        self.warning_sound.play()
-                
-                elif new_level == 2:
+                # Chỉ bắt đầu vòng lặp nguy hiểm khi chuyển sang cấp 2
+                if new_level == 2:
                     self.alert_stop_event.clear()
                     self.alert_thread = threading.Thread(target=self._critical_alert_loop, daemon=True)
                     self.alert_thread.start()
             
+            # Với mỗi tin nhắn ở cấp độ 1, phát âm thanh cảnh báo nếu không có âm thanh nào khác đang chạy
+            if new_level == 1 and self.warning_sound and not pygame.mixer.get_busy():
+                print(" -> Phát cảnh báo sớm...")
+                self.warning_sound.play()
+
             self.current_alert_level = new_level
             
             name = data.get("sensorname", msg.topic)
@@ -185,7 +187,13 @@ class Backend:
                 threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
             
             if self.publish_topic:
-                self.client.publish(self.publish_topic, f"({value:.2f}, {status}, {int(ts)})")
+                # Tạo một payload JSON hợp lệ để publish
+                payload_out = {
+                    "sensorname": name,
+                    "value": value,
+                    "timestamp": ts
+                }
+                self.client.publish(self.publish_topic, json.dumps(payload_out))
                 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"Lỗi xử lý message: {e}")
