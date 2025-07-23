@@ -540,7 +540,7 @@ class AppGUI:
         self._setup_plot_style()
         if not display_data_slice:
             self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
-            self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
+            self.info_label.config(text="Hiển thị: 0/0 điểm")
         else:
             indices, values, times, unit, threshold = self._prepare_plot_data(display_data_slice, start)
             self._setup_plot_style(unit)
@@ -602,7 +602,7 @@ class AppGUI:
             self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
         handles, labels = self.ax.get_legend_handles_labels()
         self.ax.legend(dict(zip(labels, handles)).values(), dict(zip(labels, handles)).keys(), loc='upper left')
-        self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
+        self.info_label.config(text=f"Hiển thị: {end - start}/{total_points} điểm")
         try:
             self.fig.tight_layout()
         except (RecursionError, RuntimeError):
