@@ -501,20 +501,26 @@ class AppGUI:
             self.save_csv_button.config(state="disabled")
             threading.Thread(target=self._write_csv_in_background, args=(path, list(self.backend.sensor_data)), daemon=True).start()
 
+
     def _write_csv_in_background(self, path, data_to_save):
         try:
             import csv
-            with open(path, "w", newline="", encoding='utf-8') as f:
+            with open(path, "w", newline="", encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(self.sheet.get_headers())
+                writer.writerow(self.sheet.headers())
                 writer.writerows(data_to_save)
-            if self.root.winfo_exists(): self.root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {os.path.basename(path)}", parent=self.root))
-        except Exception as e:
-            if self.root.winfo_exists(): self.root.after(0, lambda: messagebox.showerror("Lỗi", f"Không thể lưu file: {e}", parent=self.root))
-        finally:
-            if self.root.winfo_exists(): self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
+            if self.root.winfo_exists():
+                self.root.after(0, lambda p=path: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {os.path.basename(p)}", parent=self.root))
 
-    # --- Các hàm biểu đồ (không thay đổi) ---
+        except Exception as e:
+            if self.root.winfo_exists():
+                self.root.after(0, lambda err=e: messagebox.showerror("Lỗi", f"Không thể lưu file:\n\n{err}", parent=self.root))
+
+        finally:
+            if self.root.winfo_exists():
+                self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
+
+    # --- Các hàm biểu đồ ---
     def show_chart_window(self):
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.lift(); return
         
