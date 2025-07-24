@@ -87,7 +87,6 @@ class Backend:
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
-            print("Pygame mixer đã khởi tạo thành công.")
         except Exception as e:
             print(f"LỖI: Không thể khởi tạo pygame mixer: {e}")
             self.mixer_initialized = False
