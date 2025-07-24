@@ -50,6 +50,7 @@ class Backend:
         self.warning_threshold = 1.0
         self.critical_threshold = 1.2
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
+        
         # Biến giữ các đối tượng âm thanh
         self.warning_sound = None
         self.critical_sound = None
@@ -57,8 +58,10 @@ class Backend:
         self.decreasing_sound = None
         self.safe_sound_1 = None # Dành cho file "safe.mp3"
         self.safe_sound_2 = None # Dành cho file "safe2.mp3"
+
         self.alert_thread = None
         self.mixer_initialized = False
+        
         # --- Biến theo dõi trạng thái cảnh báo MỚI ---
         self.current_alert_level = 0        # 0: An toàn, 1: Cảnh báo, 2: Nguy hiểm
         self.safe_readings_count = 0        # Đếm số lần đọc an toàn liên tiếp
@@ -67,6 +70,7 @@ class Backend:
         self.was_in_high_level_state = False # Cờ báo đã từng ở mức cao (cảnh báo/nguy hiểm)
         self.initial_safe_played = False    # Cờ báo đã phát âm thanh an toàn lần đầu
         self.safe_return_phase = 0          # Giai đoạn trở về an toàn (0: chưa, 1: đếm đến 10, 2: đếm đến 15, 3: xong)
+
         self.sensor_data = []
         self.plot_data_points = deque(maxlen=MAX_PLOT_POINTS)
         self.gui_update_queue = queue.Queue()
@@ -117,20 +121,34 @@ class Backend:
         if not self.listening or self.exiting: return
         try:
             data = json.loads(msg.payload.decode())
-            value = float(data.get("value", 0))
+
+            # === THAY ĐỔI TẠI ĐÂY: KIỂM TRA TIN NHẮN HỢP LỆ ===
+            # Nếu tin nhắn không chứa khóa "value", đây là tin nhắn trạng thái -> bỏ qua
+            if "value" not in data:
+                status_info = data.get("status", f"Tin nhắn không chứa key 'value': {data}")
+                print(f"INFO: Nhận được tin nhắn không phải dữ liệu, bỏ qua: '{status_info}'")
+                return # Dừng xử lý ngay lập tức
+            # ======================================================
+
+            value = float(data.get("value"))
             previous_level = self.current_alert_level
             new_level = 0
+            
             if value >= self.critical_threshold:
                 new_level = 2 # Nguy hiểm
             elif value >= self.warning_threshold:
                 new_level = 1 # Cảnh báo
             else:
                 new_level = 0 # An toàn
+
+            # --- LOGIC XỬ LÝ ÂM THANH MỚI ---
+
             # A. TRẠNG THÁI AN TOÀN (new_level == 0)
             if new_level == 0:
                 self.warning_readings_count = 0
                 self.decreasing_warning_count = 0
                 self.safe_readings_count += 1
+
                 # A1. An toàn lần đầu (chưa từng có cảnh báo)
                 if not self.was_in_high_level_state:
                     if not self.initial_safe_played and self.safe_readings_count == 10:
@@ -142,22 +160,26 @@ class Backend:
                     # Bắt đầu chu trình quay về an toàn
                     if self.safe_return_phase == 0:
                          self.safe_return_phase = 1
+                    
                     if self.safe_return_phase == 1 and self.safe_readings_count == 10:
                         print("Về an toàn: Đủ 10 lần, phát 'safe2.mp3'.")
                         self._play_sequence_in_thread([self.safe_sound_2])
                         self.safe_return_phase = 2 # Chuyển sang giai đoạn đếm tiếp
+                    
                     elif self.safe_return_phase == 2 and self.safe_readings_count == 15:
                         print("Về an toàn: Đủ 15 lần, phát 'safe2.mp3' lần cuối.")
                         self._play_sequence_in_thread([self.safe_sound_2])
                         self.safe_return_phase = 3 # Hoàn thành
                         self.was_in_high_level_state = False # Reset cờ, coi như đã xử lý xong đợt nguy hiểm
                         self.initial_safe_played = True # Đánh dấu đã phát âm thanh an toàn
+
             # B. TRẠNG THÁI CẢNH BÁO (new_level == 1)
             elif new_level == 1:
                 self.safe_readings_count = 0
                 self.safe_return_phase = 0
                 if not self.was_in_high_level_state:
                     self.was_in_high_level_state = True
+
                 # B1. Tăng từ An toàn lên Cảnh báo
                 if previous_level == 0:
                     print("TĂNG lên Cảnh báo. Phát 'coi1' -> 'warning'.")
@@ -186,6 +208,7 @@ class Backend:
                         if self.decreasing_warning_count % 10 == 0: # Cứ 10 lần
                             print("Phát lại cảnh báo giảm: 'decrease'.")
                             self._play_sequence_in_thread([self.decreasing_sound])
+
             # C. TRẠNG THÁI NGUY HIỂM (new_level == 2)
             elif new_level == 2:
                 self.safe_readings_count = 0
@@ -194,20 +217,27 @@ class Backend:
                 self.safe_return_phase = 0
                 if not self.was_in_high_level_state:
                     self.was_in_high_level_state = True
+                
                 print("NGUY HIỂM! Phát 'coi1' -> 'danger' -> 'coi1'.")
                 self._play_sequence_in_thread([self.siren_sound, self.critical_sound, self.siren_sound])
+            
             # Cập nhật trạng thái sau khi xử lý
             if new_level != previous_level:
                 # Khi vừa chuyển từ mức cao về an toàn, reset bộ đếm
                 if new_level == 0 and previous_level > 0:
                     self.safe_readings_count = 1 
                 print(f"Chuyển trạng thái từ {previous_level} -> {new_level}")
+
             self.current_alert_level = new_level
+            
+            # --- PHẦN LOGIC GỐC ---
             name = data.get("sensorname", msg.topic)
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
             status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
-            record = (name, f"{value:.2f}", status, dt_object.strftime("%H:%M:%S %d-%m"))         
+            
+            record = (name, str(value), status, dt_object.strftime("%H:%M:%S %d-%m"))         
+            
             self.sensor_data.append(record)
             self.plot_data_points.append((dt_object, value))
             self.gui_update_queue.put(record)
