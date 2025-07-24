@@ -19,15 +19,8 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import numpy as np
-
-# Giả định Pygame và RPi.GPIO đã được cài đặt
-try:
-    import pygame
-    import RPi.GPIO as GPIO
-except ImportError as e:
-    print(f"Lỗi import: {e}. Vui lòng đảm bảo Pygame và RPi.GPIO đã được cài đặt.")
-    sys.exit(1)
-
+import pygame
+import RPi.GPIO as GPIO
 
 # --- CÁC HẰNG SỐ TOÀN CỤC ---
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -39,12 +32,10 @@ LED2_PIN = 27
 MAX_PLOT_POINTS = 10000
 
 # --- ĐỊNH NGHĨA THƯ MỤC CHỨA FILE ÂM THANH ---
-# Các tên file cụ thể sẽ được định nghĩa bên trong lớp Backend
 SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
 
-
 # ==============================================================================
-# LỚP LOGIC NỀN (BACKEND) - Logic cảnh báo đa cấp (ĐÃ SỬA ĐỔI THEO YÊU CẦU)
+# LỚP LOGIC NỀN (BACKEND) - Logic cảnh báo đa cấp
 # ==============================================================================
 class Backend:
     def __init__(self):
@@ -56,10 +47,8 @@ class Backend:
         self.broker, self.port, self.username, self.password = "aitogy.xyz", 1883, "abc", "xyz"
         self.publish_topic = ""
         self.subscribe_topics = []
-        
         self.warning_threshold = 1.0
         self.critical_threshold = 1.2
-
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
         
         # Biến giữ các đối tượng âm thanh
@@ -106,33 +95,26 @@ class Backend:
 
     def _load_audio_files(self):
         if not self.mixer_initialized: return
-        # Đổi tên các file âm thanh để phù hợp với yêu cầu mới
+        # Định nghĩa tên các file âm thanh
         SIREN_FILE = os.path.join(SOUNDS_DIR, "coi1.mp3")
         WARNING_FILE = os.path.join(SOUNDS_DIR, "warning.mp3")
         DANGER_FILE = os.path.join(SOUNDS_DIR, "danger.mp3")
         DECREASE_FILE = os.path.join(SOUNDS_DIR, "decrease.mp3")
         SAFE_FILE_1 = os.path.join(SOUNDS_DIR, "safe.mp3")
         SAFE_FILE_2 = os.path.join(SOUNDS_DIR, "safe2.mp3")
-
         try:
             if os.path.exists(WARNING_FILE): self.warning_sound = pygame.mixer.Sound(WARNING_FILE)
             else: print(f"CẢNH BÁO: Không tìm thấy file {WARNING_FILE}")
-
             if os.path.exists(DANGER_FILE): self.critical_sound = pygame.mixer.Sound(DANGER_FILE)
             else: print(f"CẢNH BÁO: Không tìm thấy file {DANGER_FILE}")
-
             if os.path.exists(SIREN_FILE): self.siren_sound = pygame.mixer.Sound(SIREN_FILE)
             else: print(f"CẢNH BÁO: Không tìm thấy file {SIREN_FILE}")
-
             if os.path.exists(DECREASE_FILE): self.decreasing_sound = pygame.mixer.Sound(DECREASE_FILE)
             else: print(f"CẢNH BÁO: Không tìm thấy file {DECREASE_FILE}")
-            
             if os.path.exists(SAFE_FILE_1): self.safe_sound_1 = pygame.mixer.Sound(SAFE_FILE_1)
             else: print(f"CẢNH BÁO: Không tìm thấy file {SAFE_FILE_1} (file an toàn lần đầu)")
-                
             if os.path.exists(SAFE_FILE_2): self.safe_sound_2 = pygame.mixer.Sound(SAFE_FILE_2)
             else: print(f"CẢNH BÁO: Không tìm thấy file {SAFE_FILE_2} (file an toàn sau cảnh báo)")
-
         except Exception as e:
             print(f"LỖI khi tải file âm thanh: {e}")
 
@@ -141,7 +123,6 @@ class Backend:
         try:
             data = json.loads(msg.payload.decode())
             value = float(data.get("value", 0))
-            
             previous_level = self.current_alert_level
             new_level = 0
             if value >= self.critical_threshold:
@@ -151,47 +132,39 @@ class Backend:
             else:
                 new_level = 0 # An toàn
 
-            # === LOGIC XỬ LÝ ÂM THANH MỚI ===
-
             # --- A. Xử lý trạng thái AN TOÀN (new_level == 0) ---
             if new_level == 0:
-                self.decreasing_warning_count = 0 # Reset counter khi đã an toàn
+                self.decreasing_warning_count = 0 
                 self.safe_readings_count += 1
 
-                # 1. An toàn lần đầu: sau 10 lần đo đầu tiên
                 if not self.initial_safe_played and not self.was_in_high_level_state and self.safe_readings_count == 10:
                     print("Trạng thái an toàn ban đầu được xác nhận. Phát âm thanh 'safe'.")
                     self._play_sequence_in_thread([self.safe_sound_1])
                     self.initial_safe_played = True
 
-                # 2. An toàn sau khi giảm: sau khi ở mức cao và đo được 10 lần an toàn
                 elif self.was_in_high_level_state and self.safe_readings_count == 10:
                     print("Mực nước đã giảm về mức an toàn. Phát âm thanh 'safe2'.")
                     self._play_sequence_in_thread([self.safe_sound_2])
-                    self.was_in_high_level_state = False # Reset chu kỳ
-                    # Đánh dấu đã phát để không phát lại cho đến khi có cảnh báo mới
+                    self.was_in_high_level_state = False 
                     self.initial_safe_played = True 
 
             # --- B. Xử lý trạng thái CẢNH BÁO (new_level == 1) ---
             elif new_level == 1:
-                self.safe_readings_count = 0 # Reset bộ đếm an toàn
+                self.safe_readings_count = 0 
                 self.was_in_high_level_state = True
 
-                # 1. Mực nước TĂNG từ An toàn -> Cảnh báo
                 if previous_level == 0:
                     print("Mực nước TĂNG đến ngưỡng CẢNH BÁO.")
                     sequence = [self.siren_sound, self.warning_sound, self.siren_sound]
                     self._play_sequence_in_thread(sequence)
                     self.decreasing_warning_count = 0 
 
-                # 2. Mực nước GIẢM từ Nguy hiểm -> Cảnh báo
                 elif previous_level == 2:
                     print("Mực nước GIẢM từ Nguy hiểm xuống CẢNH BÁO.")
                     sequence = [self.siren_sound, self.decreasing_sound]
                     self._play_sequence_in_thread(sequence)
                     self.decreasing_warning_count = 1 
 
-                # 3. Mực nước VẪN ở mức Cảnh báo (khi đang trong chu kỳ giảm)
                 elif previous_level == 1 and self.decreasing_warning_count > 0:
                      self.decreasing_warning_count += 1
                      print(f"Mực nước vẫn ở mức Cảnh Báo (lần đo thứ {self.decreasing_warning_count} trong chu kỳ giảm).")
@@ -211,10 +184,9 @@ class Backend:
                     sequence = [self.siren_sound, self.critical_sound, self.siren_sound]
                     self._play_sequence_in_thread(sequence)
 
-            # Cập nhật trạng thái cho lần xử lý tiếp theo
             self.current_alert_level = new_level
             
-            # --- PHẦN LOGIC GỐC GIỮ LẠI ---
+            # --- PHẦN LOGIC GỐC ---
             name = data.get("sensorname", msg.topic)
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
@@ -238,28 +210,23 @@ class Backend:
             print(f"Lỗi xử lý message: {e}")
 
     def stop_all_alerts(self):
-        # Dừng luồng phát âm thanh nếu đang chạy
         if self.alert_thread and self.alert_thread.is_alive():
-            # Không thể dừng trực tiếp, nhưng việc dừng mixer sẽ ngắt âm thanh
             pass 
         if self.mixer_initialized:
             pygame.mixer.stop()
 
     def _play_sequence_in_thread(self, sound_list):
-        """Phát một chuỗi âm thanh trong một luồng riêng."""
         def target():
             if not self.mixer_initialized: return
             for sound in sound_list:
                 if sound:
-                    # In ra tên file âm thanh đang phát để debug
-                    # Đây là một cách tiếp cận đơn giản; một giải pháp phức tạp hơn sẽ cần ánh xạ ngược từ đối tượng Sound về tên file.
                     print(f" -> Đang phát một âm thanh trong chuỗi...")
                     sound.play()
                     while pygame.mixer.get_busy():
                         time.sleep(0.1)
                 else:
                     print("CẢNH BÁO: Bỏ qua file âm thanh không tồn tại trong chuỗi.")
-                time.sleep(0.2) # Thêm một khoảng lặng nhỏ giữa các âm thanh
+                time.sleep(0.2)
         
         self.stop_all_alerts()
         self.alert_thread = threading.Thread(target=target, daemon=True)
