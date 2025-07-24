@@ -19,17 +19,9 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import numpy as np
-
-# --- THÊM MỚI: Import và kiểm tra Pygame ---
-try:
-    import pygame
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("CẢNH BÁO: Thư viện 'pygame' chưa được cài đặt. Chức năng cảnh báo âm thanh sẽ bị vô hiệu hóa.")
-    print("Vui lòng cài đặt bằng lệnh: pip install pygame")
-
-
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1" 
+import pygame
+import RPi.GPIO as GPIO
 # --- CÁC HẰNG SỐ TOÀN CỤC ---
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 CONFIG_FILE = 'config.ini'
@@ -38,33 +30,7 @@ DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA"
 LED1_PIN = 3
 LED2_PIN = 27
 MAX_PLOT_POINTS = 10000
-
-# --- CẬP NHẬT: ĐỊNH NGHĨA SẴN ĐƯỜNG DẪN TUYỆT ĐỐI ĐẾN CÁC FILE ÂM THANH ---
 SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
-WARNING_VOICE_FILE = os.path.join(SOUNDS_DIR, "warning_voice.mp3")
-CRITICAL_VOICE_FILE = os.path.join(SOUNDS_DIR, "critical_voice.mp3")
-SIREN_SOUND_FILE = os.path.join(SOUNDS_DIR, "siren.mp3")
-
-
-# --- MOCK GPIO CHO MÔI TRƯỜNG KHÔNG PHẢI RASPBERRY PI ---
-try:
-    import RPi.GPIO as GPIO
-    IS_PI = True
-except (ImportError, RuntimeError):
-    IS_PI = False
-    print("CẢNH BÁO: Không thể import RPi.GPIO. Chạy ở chế độ mô phỏng GPIO.")
-
-class MockGPIO:
-    BCM, OUT, LOW, HIGH = "BCM_MODE", "OUT_MODE", 0, 1
-    def setmode(self, mode): print(f"[GPIO Mock] Set mode to {mode}")
-    def setwarnings(self, state): print(f"[GPIO Mock] Set warnings to {state}")
-    def setup(self, pin, mode, initial=LOW): self.output(pin, initial); print(f"[GPIO Mock] Setup pin {pin} to mode {mode}")
-    def output(self, pin, state): print(f"[GPIO Mock] Set pin {pin} to state {'HIGH' if state else 'LOW'}")
-    def cleanup(self): print("[GPIO Mock] GPIO cleanup called.")
-
-if not IS_PI:
-    GPIO = MockGPIO()
-
 # ==============================================================================
 # LỚP LOGIC NỀN (BACKEND) - Logic cảnh báo đa cấp
 # ==============================================================================
@@ -78,65 +44,65 @@ class Backend:
         self.broker, self.port, self.username, self.password = "aitogy.xyz", 1883, "abc", "xyz"
         self.publish_topic = ""
         self.subscribe_topics = []
-        
         self.warning_threshold = 1.0
         self.critical_threshold = 1.2
-
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
-        
         self.warning_sound = None
         self.critical_sound = None
         self.siren_sound = None
+        self.decreasing_sound = None
+        self.safe_sound_1 = None # Dành cho file "safe.mp3"
+        self.safe_sound_2 = None # Dành cho file "safe2.mp3"
         self.alert_thread = None
-        self.alert_stop_event = threading.Event()
         self.mixer_initialized = False
-        self.current_alert_level = 0 # 0: Safe, 1: Warning, 2: Critical
-
+        self.current_alert_level = 0        # 0: An toàn, 1: Cảnh báo, 2: Nguy hiểm
+        self.safe_readings_count = 0        # Đếm số lần đọc an toàn liên tiếp
+        self.warning_readings_count = 0     # Đếm số lần cảnh báo sau khi TĂNG
+        self.decreasing_warning_count = 0 # Đếm số lần cảnh báo sau khi GIẢM
+        self.was_in_high_level_state = False # Cờ báo đã từng ở mức cao (cảnh báo/nguy hiểm)
+        self.initial_safe_played = False    # Cờ báo đã phát âm thanh an toàn lần đầu
+        self.safe_return_phase = 0          # Giai đoạn trở về an toàn (0: chưa, 1: đếm đến 10, 2: đếm đến 15, 3: xong)
         self.sensor_data = []
         self.plot_data_points = deque(maxlen=MAX_PLOT_POINTS)
         self.gui_update_queue = queue.Queue()
-
         self.client = mqtt.Client(protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message
         self.stop_event = threading.Event()
-
         self.setup_audio_mixer()
         self.setup_gpio()
         self.load_config()
 
     def setup_audio_mixer(self):
-        if not PYGAME_AVAILABLE: return
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
-            print("Pygame mixer đã khởi tạo thành công.")
         except Exception as e:
             print(f"LỖI: Không thể khởi tạo pygame mixer: {e}")
             self.mixer_initialized = False
 
     def _load_audio_files(self):
         if not self.mixer_initialized: return
-        self.warning_sound, self.critical_sound, self.siren_sound = None, None, None
+        SIREN_FILE = os.path.join(SOUNDS_DIR, "coi1.mp3")
+        WARNING_FILE = os.path.join(SOUNDS_DIR, "warning.mp3")
+        DANGER_FILE = os.path.join(SOUNDS_DIR, "danger.mp3")
+        DECREASE_FILE = os.path.join(SOUNDS_DIR, "decrease.mp3")
+        SAFE_FILE_1 = os.path.join(SOUNDS_DIR, "safe.mp3")
+        SAFE_FILE_2 = os.path.join(SOUNDS_DIR, "safe2.mp3")
         try:
-            if os.path.exists(WARNING_VOICE_FILE):
-                self.warning_sound = pygame.mixer.Sound(WARNING_VOICE_FILE)
-                print(f"Đã tải file cảnh báo sớm: {WARNING_VOICE_FILE}")
-            else:
-                print(f"CẢNH BÁO: Không tìm thấy file {WARNING_VOICE_FILE}")
-
-            if os.path.exists(CRITICAL_VOICE_FILE):
-                self.critical_sound = pygame.mixer.Sound(CRITICAL_VOICE_FILE)
-                print(f"Đã tải file cảnh báo nguy hiểm: {CRITICAL_VOICE_FILE}")
-            else:
-                print(f"CẢNH BÁO: Không tìm thấy file {CRITICAL_VOICE_FILE}")
-
-            if os.path.exists(SIREN_SOUND_FILE):
-                self.siren_sound = pygame.mixer.Sound(SIREN_SOUND_FILE)
-                print(f"Đã tải file còi: {SIREN_SOUND_FILE}")
-            else:
-                print(f"CẢNH BÁO: Không tìm thấy file {SIREN_SOUND_FILE}")
+            if os.path.exists(SIREN_FILE): self.siren_sound = pygame.mixer.Sound(SIREN_FILE)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {SIREN_FILE}")
+            if os.path.exists(WARNING_FILE): self.warning_sound = pygame.mixer.Sound(WARNING_FILE)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {WARNING_FILE}")
+            if os.path.exists(DANGER_FILE): self.critical_sound = pygame.mixer.Sound(DANGER_FILE)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {DANGER_FILE}")
+            if os.path.exists(DECREASE_FILE): self.decreasing_sound = pygame.mixer.Sound(DECREASE_FILE)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {DECREASE_FILE}")
+            if os.path.exists(SAFE_FILE_1): self.safe_sound_1 = pygame.mixer.Sound(SAFE_FILE_1)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {SAFE_FILE_1}")
+            if os.path.exists(SAFE_FILE_2): self.safe_sound_2 = pygame.mixer.Sound(SAFE_FILE_2)
+            else: print(f"CẢNH BÁO: Không tìm thấy file {SAFE_FILE_2}")
         except Exception as e:
             print(f"LỖI khi tải file âm thanh: {e}")
 
@@ -144,92 +110,142 @@ class Backend:
         if not self.listening or self.exiting: return
         try:
             data = json.loads(msg.payload.decode())
-            value = float(data.get("value", 0))
-            
+            if "value" not in data:
+                status_info = data.get("status", f"Tin nhắn không chứa key 'value': {data}")
+                print(f"INFO: Nhận được tin nhắn không phải dữ liệu, bỏ qua: '{status_info}'")
+                return # Dừng xử lý ngay lập tức
+            value = float(data.get("value"))
+            previous_level = self.current_alert_level
             new_level = 0
             if value >= self.critical_threshold:
-                new_level = 2
+                new_level = 2 # Nguy hiểm
             elif value >= self.warning_threshold:
-                new_level = 1
-
-            if new_level != self.current_alert_level:
-                print(f"Chuyển đổi cấp độ cảnh báo: {self.current_alert_level} -> {new_level}")
-                self.stop_all_alerts()
-
-                if new_level == 1:
-                    if self.warning_sound:
-                        print(" -> Phát cảnh báo sớm (một lần).")
-                        self.warning_sound.play()
-                
-                elif new_level == 2:
-                    self.alert_stop_event.clear()
-                    self.alert_thread = threading.Thread(target=self._critical_alert_loop, daemon=True)
-                    self.alert_thread.start()
-            
+                new_level = 1 # Cảnh báo
+            else:
+                new_level = 0 # An toàn
+            if new_level == 0:
+                self.warning_readings_count = 0
+                self.decreasing_warning_count = 0
+                self.safe_readings_count += 1
+                # A1. An toàn lần đầu (chưa từng có cảnh báo)
+                if not self.was_in_high_level_state:
+                    if not self.initial_safe_played and self.safe_readings_count == 10:
+                        print("An toàn ban đầu: Đủ 10 lần, phát 'safe.mp3'.")
+                        self._play_sequence_in_thread([self.safe_sound_1])
+                        self.initial_safe_played = True
+                # A2. Quay về an toàn sau khi đã có cảnh báo
+                else:
+                    if self.safe_return_phase == 0:
+                         self.safe_return_phase = 1
+                    if self.safe_return_phase == 1 and self.safe_readings_count == 10:
+                        print("Về an toàn: Đủ 10 lần, phát 'safe2.mp3'.")
+                        self._play_sequence_in_thread([self.safe_sound_2])
+                        self.safe_return_phase = 2 # Chuyển sang giai đoạn đếm tiếp
+                    elif self.safe_return_phase == 2 and self.safe_readings_count == 15:
+                        print("Về an toàn: Đủ 15 lần, phát 'safe2.mp3' lần cuối.")
+                        self._play_sequence_in_thread([self.safe_sound_2])
+                        self.safe_return_phase = 3 # Hoàn thành
+                        self.was_in_high_level_state = False # Reset cờ, coi như đã xử lý xong đợt nguy hiểm
+                        self.initial_safe_played = True # Đánh dấu đã phát âm thanh an toàn
+            # B. TRẠNG THÁI CẢNH BÁO (new_level == 1)
+            elif new_level == 1:
+                self.safe_readings_count = 0
+                self.safe_return_phase = 0
+                if not self.was_in_high_level_state:
+                    self.was_in_high_level_state = True
+                # B1. Tăng từ An toàn lên Cảnh báo
+                if previous_level == 0:
+                    print("TĂNG lên Cảnh báo. Phát 'coi1' -> 'warning'.")
+                    self._play_sequence_in_thread([self.siren_sound, self.warning_sound])
+                    self.warning_readings_count = 1
+                    self.decreasing_warning_count = 0
+                # B2. Giảm từ Nguy hiểm xuống Cảnh báo
+                elif previous_level == 2:
+                    print("GIẢM từ Nguy hiểm xuống Cảnh báo. Phát 'decrease'.")
+                    self._play_sequence_in_thread([self.decreasing_sound])
+                    self.decreasing_warning_count = 1
+                    self.warning_readings_count = 0
+                # B3. Duy trì ở mức Cảnh báo
+                elif previous_level == 1:
+                    if self.warning_readings_count > 0:
+                        self.warning_readings_count += 1
+                        print(f"Duy trì Cảnh báo (tăng), lần {self.warning_readings_count}.")
+                        if self.warning_readings_count % 6 == 0: # Cứ 6 lần (60s)
+                             print("Phát lại cảnh báo tăng: 'coi1' -> 'warning'.")
+                             self._play_sequence_in_thread([self.siren_sound, self.warning_sound])
+                    elif self.decreasing_warning_count > 0:
+                        self.decreasing_warning_count += 1
+                        print(f"Duy trì Cảnh báo (giảm), lần {self.decreasing_warning_count}.")
+                        if self.decreasing_warning_count % 10 == 0: # Cứ 10 lần
+                            print("Phát lại cảnh báo giảm: 'decrease'.")
+                            self._play_sequence_in_thread([self.decreasing_sound])
+            # C. TRẠNG THÁI NGUY HIỂM (new_level == 2)
+            elif new_level == 2:
+                self.safe_readings_count = 0
+                self.warning_readings_count = 0
+                self.decreasing_warning_count = 0
+                self.safe_return_phase = 0
+                if not self.was_in_high_level_state:
+                    self.was_in_high_level_state = True
+                print("NGUY HIEM")
+                self._play_sequence_in_thread([self.siren_sound, self.critical_sound, self.siren_sound])
+            if new_level != previous_level:
+                if new_level == 0 and previous_level > 0:
+                    self.safe_readings_count = 1 
+                print(f"Chuyển trạng thái từ {previous_level} -> {new_level}")
             self.current_alert_level = new_level
-            
             name = data.get("sensorname", msg.topic)
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
-            
-            is_over_threshold = value >= self.critical_threshold
-            status = "NGUY HIEM" if is_over_threshold else ("CANH BAO" if new_level == 1 else "AN TOAN")
-            record = (name, f"{value:.2f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
-            
+            status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
+            record = (name, str(value), status, dt_object.strftime("%H:%M:%S %d-%m"))         
             self.sensor_data.append(record)
             self.plot_data_points.append((dt_object, value))
             self.gui_update_queue.put(record)
-
             threading.Thread(target=self.flash_led, args=(self.led1_pin,), daemon=True).start()
             if new_level > 0:
-                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
-            
+                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()            
             if self.publish_topic:
-                self.client.publish(self.publish_topic, f"({value:.2f}, {status}, {int(ts)})")
-                
+                payload_out = {"sensorname": name, "value": value, "timestamp": ts}
+                self.client.publish(self.publish_topic, json.dumps(payload_out))               
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"Lỗi xử lý message: {e}")
 
     def stop_all_alerts(self):
-        if self.alert_thread and self.alert_thread.is_alive():
-            self.alert_stop_event.set()
         if self.mixer_initialized:
             pygame.mixer.stop()
 
-    def _critical_alert_loop(self):
-        if not self.mixer_initialized or not self.siren_sound or not self.critical_sound:
-            print("Bỏ qua vòng lặp nguy hiểm: mixer hoặc file âm thanh chưa sẵn sàng.")
-            return
+    def _play_sequence_in_thread(self, sound_list):
+        self.stop_all_alerts()
+        if self.alert_thread and self.alert_thread.is_alive():
+            pass
 
-        print("Bắt đầu vòng lặp cảnh báo NGUY HIỂM...")
-        try:
-            while not self.alert_stop_event.is_set():
-                if self.alert_stop_event.is_set(): break
-                print(" -> Phát còi...")
-                self.siren_sound.play()
-                while pygame.mixer.get_busy() and not self.alert_stop_event.is_set():
-                    time.sleep(0.1)
-                
-                if self.alert_stop_event.is_set(): break
-                print(" -> Phát lời nói sơ tán...")
-                self.critical_sound.play()
-                while pygame.mixer.get_busy() and not self.alert_stop_event.is_set():
-                    time.sleep(0.1)
-        except Exception as e:
-            if "mixer not initialized" not in str(e):
-                 print(f"LỖI trong vòng lặp nguy hiểm: {e}")
-        
-        print("Đã thoát khỏi vòng lặp nguy hiểm.")
+        def target():
+            if not self.mixer_initialized: return
+            for sound in sound_list:
+                if sound:
+                    if threading.current_thread() != self.alert_thread:
+                        return
+                    print(f" -> Đang phát một âm thanh trong chuỗi...")
+                    sound.play()
+                    while pygame.mixer.get_busy():
+                        if threading.current_thread() != self.alert_thread:
+                            pygame.mixer.stop()
+                            return
+                        time.sleep(0.1)
+                else:
+                    print("CẢNH BÁO: Bỏ qua file âm thanh không tồn tại trong chuỗi.")
+                time.sleep(0.2)
+        self.alert_thread = threading.Thread(target=target, daemon=True)
+        self.alert_thread.start()
 
     def update_and_reconnect(self, settings: dict):
         self.broker, self.port = settings['broker'], int(settings['port'])
         self.username, self.password = settings['username'], settings['password']
         self.publish_topic = settings['publish']
         self.subscribe_topics = [t for t in settings['topics'].splitlines() if t]
-        
         self.warning_threshold = float(settings['warning_threshold'])
         self.critical_threshold = float(settings['critical_threshold'])
-
         self.save_config()
         if self.listening:
             self.toggle_off()
@@ -281,16 +297,12 @@ class Backend:
         self.exiting = True
         self.stop_event.set()
         self.stop_all_alerts()
-        
-        if self.alert_thread and self.alert_thread.is_alive():
-            self.alert_thread.join(timeout=2)
-
+        self.alert_thread = None
         try:
             self.client.loop_stop(force=True)
             self.client.disconnect()
         except Exception: pass
-        try: GPIO.cleanup()
-        except Exception: pass
+        GPIO.cleanup()
         if not silent: print(" -> Backend đã dừng.")
     
     def setup_gpio(self):
@@ -301,7 +313,7 @@ class Backend:
             GPIO.setup(self.led2_pin, GPIO.OUT, initial=GPIO.LOW)
             print("GPIO setup successful.")
         except Exception as e:
-            print(f"Error setting up GPIO: {e}")
+            print(f"Lỗi khi cài đặt GPIO: {e}")
 
     def start_background_tasks(self):
         self.load_session_data()
@@ -314,7 +326,7 @@ class Backend:
             time.sleep(duration)
             GPIO.output(pin, GPIO.LOW)
         except Exception as e:
-            print(f"Error flashing LED on pin {pin}: {e}")
+            print(f"Lỗi nháy LED trên pin {pin}: {e}")
 
     def on_connect(self, client, userdata, flags, rc):
         if self.exiting: return
@@ -383,12 +395,9 @@ class Backend:
 
     def _run_led_check(self):
         print("Kiểm tra LED...")
-        try:
-            self.flash_led(self.led1_pin, duration=0.5)
-            time.sleep(0.1)
-            self.flash_led(self.led2_pin, duration=0.5)
-        except Exception as e:
-            print(f"Lỗi khi kiểm tra LED: {e}")
+        self.flash_led(self.led1_pin, duration=0.5)
+        time.sleep(0.1)
+        self.flash_led(self.led2_pin, duration=0.5)
 
     def auto_clear_scheduler(self):
         while not self.stop_event.is_set():
@@ -422,12 +431,10 @@ class Backend:
         try:
             with open(SESSION_FILE, "r") as f: session = json.load(f)
             self.sensor_data = session.get("sensor_data", [])
-            
             plot_data_serializable = session.get("plot_data_points", [])
             self.plot_data_points.clear()
             for dt_str, val in plot_data_serializable:
                 self.plot_data_points.append((datetime.fromisoformat(dt_str), val))
-            
             for record in self.sensor_data: self.gui_update_queue.put(record)
             print(" -> Đã tải lại dữ liệu thành công.")
         except Exception as e:
@@ -436,7 +443,7 @@ class Backend:
             if os.path.exists(SESSION_FILE): os.remove(SESSION_FILE)
 
 # ==============================================================================
-# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
+# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI) - KHÔNG THAY ĐỔI
 # ==============================================================================
 class AppGUI:
     def __init__(self, root: tk.Toplevel, backend: Backend, on_close_callback):
@@ -444,17 +451,14 @@ class AppGUI:
         self.backend = backend
         self.on_close_callback = on_close_callback
         self.root.title("Giao diện Cảm biến & Điều khiển LED")
-        self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
-        
+        self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")        
         self.chart_window = None
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         self.points_per_view = 40
         self.current_start_index = 0
-        
         self.last_highlighted_row = None
         self._is_updating_slider = False
         self._slider_after_id = None 
-
         self.create_widgets()
         self.load_initial_data()
         self.root.after(250, self.periodic_update)
@@ -463,30 +467,23 @@ class AppGUI:
     def create_left_panel(self, parent):
         left = ttk.LabelFrame(parent, text="Cài đặt MQTT & Ngưỡng", padding=10)
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
-
         def add_labeled_entry(frame, label, row, show=None):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
             entry = ttk.Entry(frame, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=3, columnspan=2)
             return entry
-
         self.broker_entry = add_labeled_entry(left, "MQTT Broker:", 0)
         self.port_entry = add_labeled_entry(left, "Port:", 1)
         self.user_entry = add_labeled_entry(left, "Username:", 2)
         self.pass_entry = add_labeled_entry(left, "Password:", 3, show="*")
-        
         show_btn = ttk.Button(left, text="👁", command=self.toggle_pass, width=2, bootstyle="light")
         show_btn.grid(row=3, column=2, sticky="e", padx=(0,0))
-
         self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
-
         self.warning_threshold_entry = add_labeled_entry(left, "Ngưỡng Cảnh Báo (m):", 5)
         self.critical_threshold_entry = add_labeled_entry(left, "Ngưỡng Nguy Hiểm (m):", 6)
-
         ttk.Label(left, text="Subscribe Topics:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
         self.topic_input = tk.Text(left, height=5, width=35, relief="solid", borderwidth=1)
         self.topic_input.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
-        
         left.grid_rowconfigure(8, weight=1)
         ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10,0))
 
@@ -496,10 +493,8 @@ class AppGUI:
         self.user_entry.insert(0, self.backend.username)
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
-        
         self.warning_threshold_entry.insert(0, str(self.backend.warning_threshold))
         self.critical_threshold_entry.insert(0, str(self.backend.critical_threshold))
-        
         self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
 
     def apply_and_save_config(self):
@@ -577,13 +572,10 @@ class AppGUI:
         right.grid(row=0, column=1, sticky="nsew")
         right.grid_rowconfigure(1, weight=1)
         right.grid_columnconfigure(0, weight=1)
-
         self.status_label = ttk.Label(right, text="", font=("Arial", 11, "bold"))
         self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-
         sheet_frame = ttk.Frame(right)
         sheet_frame.grid(row=1, column=0, sticky="nsew")
-        
         self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"], show_row_index=True)
         self.sheet.pack(fill=tk.BOTH, expand=True)
         self.sheet.disable_bindings()
@@ -754,12 +746,10 @@ class AppGUI:
             else:
                 safe_indices.append(i)
                 safe_values.append(val)
-
         self.ax.plot(indices, values, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=3)
         self.ax.scatter(safe_indices, safe_values, color='green', s=40, label='An toàn', zorder=5)
         self.ax.scatter(warn_indices, warn_values, color='orange', s=40, label='Cảnh báo', zorder=5)
         self.ax.scatter(crit_indices, crit_values, color='red', s=40, label='Nguy hiểm', zorder=5)
-        
         self.ax.axhline(y=warning_thresh, color='gold', linestyle='--', linewidth=2, alpha=0.9, label=f'Ngưỡng Cảnh báo ({warning_thresh:.2f} {unit})')
         self.ax.axhline(y=critical_thresh, color='darkorange', linestyle='--', linewidth=2, alpha=0.9, label=f'Ngưỡng Nguy hiểm ({critical_thresh:.2f} {unit})')
 
@@ -816,7 +806,7 @@ class AppGUI:
         self.chart_window = None
 
 # ==============================================================================
-# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER) - Không thay đổi
+# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER) - KHÔNG THAY ĐỔI
 # ==============================================================================
 class MainController:
     def __init__(self, backend, command_queue):
@@ -843,8 +833,8 @@ class MainController:
 
     def create_gui_window(self):
         if self.app_instance and self.app_instance.root.winfo_exists():
-            print("Giao diện đã đang chạy."); self.app_instance.root.lift(); return
-        
+            print("Giao diện đã đang chạy."); self.app_instance.root.lift(); 
+            return        
         print("Đang khởi động giao diện người dùng...")
         toplevel_window = tk.Toplevel(self.root)
         self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
@@ -866,11 +856,10 @@ class MainController:
         self.handle_shutdown(silent=True)
 
 # ==============================================================================
-# KHỐI THỰC THI CHÍNH (MAIN) - Không thay đổi
+# KHỐI THỰC THI CHÍNH (MAIN) - KHÔNG THAY ĐỔI
 # ==============================================================================
 needs_restart = False
 command_queue = queue.Queue()
-
 def console_input_listener(cmd_queue: queue.Queue):
     while True:
         try:
@@ -891,18 +880,13 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     backend_instance = Backend()
     backend_instance.start_background_tasks()
-    
     console_thread = threading.Thread(target=console_input_listener, args=(command_queue,), daemon=True)
     console_thread.start()
-    
     print("Chương trình đã sẵn sàng.")
     print("Gõ 'show' để mở giao diện, 'exit' để thoát, 'restart' để khởi động lại.")
-    
     main_controller = MainController(backend_instance, command_queue)
     command_queue.put('show')
-    
     main_controller.run()
-    
     if needs_restart:
         print("\n" + "="*50); print("KHỞI ĐỘNG LẠI CHƯƠNG TRÌNH..."); print("="*50 + "\n")
         try: os.execv(sys.executable, ['python'] + sys.argv)
