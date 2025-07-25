@@ -454,9 +454,8 @@ class AppGUI:
         self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
         self.chart_window = None
         self.settings_window = None # Cửa sổ cài đặt
-        # Khởi tạo các widget entry là None
-        self.warning_threshold_entry = None
-        self.critical_threshold_entry = None
+        self.warning_threshold_var = tk.StringVar()
+        self.critical_threshold_var = tk.StringVar()
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         self.points_per_view = 40
         self.current_start_index = 0
@@ -519,45 +518,36 @@ class AppGUI:
         notebook.add(water_level_frame, text='Mực nước')
 
         # Thêm các entry cho ngưỡng vào tab Mực nước
-        def add_labeled_entry_settings(frame, label, row):
+        def add_labeled_entry_settings(frame, label, row, textvariable):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=5)
-            entry = ttk.Entry(frame)
+            entry = ttk.Entry(frame, textvariable=textvariable)
             entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
             frame.grid_columnconfigure(1, weight=1)
-            return entry
 
-        self.warning_threshold_entry = add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0)
-        self.critical_threshold_entry = add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1)
-
-        # Load dữ liệu hiện tại vào các entry
-        self.warning_threshold_entry.insert(0, str(self.backend.warning_threshold))
-        self.critical_threshold_entry.insert(0, str(self.backend.critical_threshold))
+        add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
+        add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
 
         # Nút để đóng cửa sổ cài đặt
         ttk.Button(self.settings_window, text="Đóng", command=self.settings_window.destroy).pack(pady=10)
 
 
     def load_initial_data(self):
+        # Load dữ liệu MQTT
         self.broker_entry.insert(0, self.backend.broker)
         self.port_entry.insert(0, str(self.backend.port))
         self.user_entry.insert(0, self.backend.username)
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
         self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
-        # Không load dữ liệu ngưỡng ở đây nữa vì nó đã được chuyển đi
+        # Load dữ liệu ngưỡng vào các biến StringVar
+        self.warning_threshold_var.set(str(self.backend.warning_threshold))
+        self.critical_threshold_var.set(str(self.backend.critical_threshold))
 
-    def apply_and_save_config(self):
-        # Lấy giá trị ngưỡng từ các entry trong cửa sổ cài đặt nếu chúng đã được tạo
-        # và còn tồn tại. Nếu không, sử dụng giá trị hiện có trong backend.
-        if self.warning_threshold_entry and self.warning_threshold_entry.winfo_exists():
-            warning_thresh_val = self.warning_threshold_entry.get()
-        else:
-            warning_thresh_val = self.backend.warning_threshold
-
-        if self.critical_threshold_entry and self.critical_threshold_entry.winfo_exists():
-            critical_thresh_val = self.critical_threshold_entry.get()
-        else:
-            critical_thresh_val = self.backend.critical_threshold
+    def apply_and_save_config(self, show_message=True):
+        # Lấy giá trị ngưỡng từ các biến StringVar, chúng luôn tồn tại
+        # ngay cả khi cửa sổ cài đặt đã đóng.
+        warning_thresh_val = self.warning_threshold_var.get()
+        critical_thresh_val = self.critical_threshold_var.get()
 
         settings = {
             'broker': self.broker_entry.get(),
@@ -574,7 +564,8 @@ class AppGUI:
             float(settings['warning_threshold'])
             float(settings['critical_threshold'])
             self.backend.update_and_reconnect(settings)
-            messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
+            if show_message:
+                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
         except ValueError:
             messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=self.root)
         except Exception as e:
@@ -623,6 +614,8 @@ class AppGUI:
 
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
+            print("Tự động lưu cấu hình hiện tại trước khi thoát...")
+            self.apply_and_save_config(show_message=False) # Lưu lại các thay đổi cuối cùng
             self.on_close_callback(shutdown=True)
 
     def create_widgets(self):
