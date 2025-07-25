@@ -206,8 +206,8 @@ class Backend:
             if new_level > 0:
                 threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()            
             if self.publish_topic:
-                payload_out = {"sensorname": name, "value": value, "timestamp": ts}
-                self.client.publish(self.publish_topic, json.dumps(payload_out))               
+                payload_out_str = f"{name},{value},{status},{ts}"
+                self.client.publish(self.publish_topic, payload_out_str)
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             print(f"Lỗi xử lý message: {e}")
 
