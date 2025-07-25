@@ -548,9 +548,16 @@ class AppGUI:
 
     def apply_and_save_config(self):
         # Lấy giá trị ngưỡng từ các entry trong cửa sổ cài đặt nếu chúng đã được tạo
-        # Nếu cửa sổ chưa được mở, sử dụng giá trị hiện có trong backend
-        warning_thresh_val = self.warning_threshold_entry.get() if self.warning_threshold_entry else self.backend.warning_threshold
-        critical_thresh_val = self.critical_threshold_entry.get() if self.critical_threshold_entry else self.backend.critical_threshold
+        # và còn tồn tại. Nếu không, sử dụng giá trị hiện có trong backend.
+        if self.warning_threshold_entry and self.warning_threshold_entry.winfo_exists():
+            warning_thresh_val = self.warning_threshold_entry.get()
+        else:
+            warning_thresh_val = self.backend.warning_threshold
+
+        if self.critical_threshold_entry and self.critical_threshold_entry.winfo_exists():
+            critical_thresh_val = self.critical_threshold_entry.get()
+        else:
+            critical_thresh_val = self.backend.critical_threshold
 
         settings = {
             'broker': self.broker_entry.get(),
