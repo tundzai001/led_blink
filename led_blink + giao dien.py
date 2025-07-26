@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox, filedialog
+from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from tksheet import Sheet
@@ -19,7 +19,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import numpy as np
-os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1" 
+os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 import pygame
 import RPi.GPIO as GPIO
 # --- CÁC HẰNG SỐ TOÀN CỤC ---
@@ -191,20 +191,20 @@ class Backend:
                 self._play_sequence_in_thread([self.siren_sound, self.critical_sound, self.siren_sound])
             if new_level != previous_level:
                 if new_level == 0 and previous_level > 0:
-                    self.safe_readings_count = 1 
+                    self.safe_readings_count = 1
                 print(f"Chuyển trạng thái từ {previous_level} -> {new_level}")
             self.current_alert_level = new_level
             name = data.get("sensorname", msg.topic)
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
             status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
-            record = (name, str(value), status, dt_object.strftime("%H:%M:%S %d-%m"))         
+            record = (name, str(value), status, dt_object.strftime("%H:%M:%S %d-%m"))
             self.sensor_data.append(record)
             self.plot_data_points.append((dt_object, value))
             self.gui_update_queue.put(record)
             threading.Thread(target=self.flash_led, args=(self.led1_pin,), daemon=True).start()
             if new_level > 0:
-                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()            
+                threading.Thread(target=self.flash_led, args=(self.led2_pin,), daemon=True).start()
             if self.publish_topic:
                 payload_out_str = f"{name},{value},{status},{ts}"
                 self.client.publish(self.publish_topic, payload_out_str)
@@ -304,7 +304,7 @@ class Backend:
         except Exception: pass
         GPIO.cleanup()
         if not silent: print(" -> Backend đã dừng.")
-    
+
     def setup_gpio(self):
         try:
             GPIO.setmode(GPIO.BCM)
@@ -365,7 +365,7 @@ class Backend:
             self.listening = False
             self.status_text, self.status_color = "Trạng thái: THỦ CÔNG (Lỗi Broker)", "red"
             return
-        
+
         self.client.username_pw_set(self.username, self.password)
         try:
             print(f"Đang kết nối tới MQTT broker: {self.broker}:{self.port}...")
@@ -385,7 +385,7 @@ class Backend:
             print("Đã ngắt kết nối MQTT.")
         except Exception: pass
         self.status_text, self.status_color = "Trạng thái: THỦ CÔNG", "red"
-        
+
     def check_leds(self):
         if self.listening:
             print("Không thể kiểm tra LED ở chế độ TỰ ĐỘNG.")
@@ -414,7 +414,7 @@ class Backend:
         self.plot_data_points.clear()
         self.gui_update_queue.put(DATA_CLEAR_SIGNAL)
         print("Đã xóa dữ liệu nền.")
-        
+
     def save_session_data(self, silent=False):
         if not silent: print(" -> Đang lưu trạng thái hiện tại vào file...")
         try:
@@ -443,7 +443,7 @@ class Backend:
             if os.path.exists(SESSION_FILE): os.remove(SESSION_FILE)
 
 # ==============================================================================
-# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI) - KHÔNG THAY ĐỔI
+# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
 # ==============================================================================
 class AppGUI:
     def __init__(self, root: tk.Toplevel, backend: Backend, on_close_callback):
@@ -451,69 +451,126 @@ class AppGUI:
         self.backend = backend
         self.on_close_callback = on_close_callback
         self.root.title("Giao diện Cảm biến & Điều khiển LED")
-        self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")        
+        self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
         self.chart_window = None
+        self.settings_window = None # Cửa sổ cài đặt
+        self.warning_threshold_var = tk.StringVar()
+        self.critical_threshold_var = tk.StringVar()
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         self.points_per_view = 40
         self.current_start_index = 0
         self.last_highlighted_row = None
         self._is_updating_slider = False
-        self._slider_after_id = None 
+        self._slider_after_id = None
         self.create_widgets()
         self.load_initial_data()
         self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
     def create_left_panel(self, parent):
-        left = ttk.LabelFrame(parent, text="Cài đặt MQTT & Ngưỡng", padding=10)
+        left = ttk.LabelFrame(parent, text="Cài đặt MQTT", padding=10)
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
+        left.grid_rowconfigure(6, weight=1) # Cho phép text box mở rộng
+
         def add_labeled_entry(frame, label, row, show=None):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
             entry = ttk.Entry(frame, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=3, columnspan=2)
             return entry
+
         self.broker_entry = add_labeled_entry(left, "MQTT Broker:", 0)
         self.port_entry = add_labeled_entry(left, "Port:", 1)
         self.user_entry = add_labeled_entry(left, "Username:", 2)
         self.pass_entry = add_labeled_entry(left, "Password:", 3, show="*")
         show_btn = ttk.Button(left, text="👁", command=self.toggle_pass, width=2, bootstyle="light")
-        show_btn.grid(row=3, column=2, sticky="e", padx=(0,0))
+        show_btn.grid(row=3, column=2, sticky="e")
         self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
-        self.warning_threshold_entry = add_labeled_entry(left, "Ngưỡng Cảnh Báo (m):", 5)
-        self.critical_threshold_entry = add_labeled_entry(left, "Ngưỡng Nguy Hiểm (m):", 6)
-        ttk.Label(left, text="Subscribe Topics:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.topic_input = tk.Text(left, height=5, width=35, relief="solid", borderwidth=1)
-        self.topic_input.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
-        left.grid_rowconfigure(8, weight=1)
-        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10,0))
+
+        ttk.Label(left, text="Subscribe Topics:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        self.topic_input = tk.Text(left, height=8, width=35, relief="solid", borderwidth=1)
+        self.topic_input.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
+
+        # Nút Cài đặt mới
+        ttk.Button(left, text="Cài đặt", command=self.open_settings_window, bootstyle="secondary").grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+
+        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=8, column=0, columnspan=3, sticky="ew", pady=(5,0))
+
+    def open_settings_window(self):
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            return
+
+        self.settings_window = Toplevel(self.root)
+        self.settings_window.title("Cài đặt Nâng cao")
+        self.settings_window.geometry("400x250")
+        self.settings_window.transient(self.root) # Giữ cửa sổ này luôn ở trên cửa sổ chính
+
+        notebook = ttk.Notebook(self.settings_window)
+        notebook.pack(pady=10, padx=10, fill="both", expand=True)
+
+        # Tab 1: GNSS
+        gnss_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(gnss_frame, text='GNSS')
+        ttk.Label(gnss_frame, text="Các cài đặt cho GNSS sẽ được bổ sung tại đây.").pack(pady=20)
+
+        # Tab 2: Mực nước
+        water_level_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(water_level_frame, text='Mực nước')
+
+        # Thêm các entry cho ngưỡng vào tab Mực nước
+        def add_labeled_entry_settings(frame, label, row, textvariable):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=5)
+            entry = ttk.Entry(frame, textvariable=textvariable)
+            entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
+            frame.grid_columnconfigure(1, weight=1)
+
+        add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
+        add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
+
+        # Nút để đóng cửa sổ cài đặt
+        ttk.Button(self.settings_window, text="Đóng", command=self.settings_window.destroy).pack(pady=10)
+
 
     def load_initial_data(self):
+        # Load dữ liệu MQTT
         self.broker_entry.insert(0, self.backend.broker)
         self.port_entry.insert(0, str(self.backend.port))
         self.user_entry.insert(0, self.backend.username)
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
-        self.warning_threshold_entry.insert(0, str(self.backend.warning_threshold))
-        self.critical_threshold_entry.insert(0, str(self.backend.critical_threshold))
         self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
+        # Load dữ liệu ngưỡng vào các biến StringVar
+        self.warning_threshold_var.set(str(self.backend.warning_threshold))
+        self.critical_threshold_var.set(str(self.backend.critical_threshold))
 
-    def apply_and_save_config(self):
+    def apply_and_save_config(self, show_message=True):
+        # Lấy giá trị ngưỡng từ các biến StringVar, chúng luôn tồn tại
+        # ngay cả khi cửa sổ cài đặt đã đóng.
+        warning_thresh_val = self.warning_threshold_var.get()
+        critical_thresh_val = self.critical_threshold_var.get()
+
         settings = {
-            'broker': self.broker_entry.get(), 
-            'port': self.port_entry.get(), 
-            'username': self.user_entry.get(), 
-            'password': self.pass_entry.get(), 
-            'topics': self.topic_input.get("1.0", "end").strip(), 
+            'broker': self.broker_entry.get(),
+            'port': self.port_entry.get(),
+            'username': self.user_entry.get(),
+            'password': self.pass_entry.get(),
+            'topics': self.topic_input.get("1.0", "end").strip(),
             'publish': self.pub_entry.get(),
-            'warning_threshold': self.warning_threshold_entry.get(),
-            'critical_threshold': self.critical_threshold_entry.get()
+            'warning_threshold': warning_thresh_val,
+            'critical_threshold': critical_thresh_val
         }
         try:
-            float(settings['warning_threshold']); float(settings['critical_threshold'])
+            # Xác thực dữ liệu ngưỡng
+            float(settings['warning_threshold'])
+            float(settings['critical_threshold'])
             self.backend.update_and_reconnect(settings)
-            messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
-        except ValueError as e: messagebox.showerror("Lỗi", f"Dữ liệu ngưỡng không hợp lệ: {e}", parent=self.root)
-        except Exception as e: messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
+            if show_message:
+                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
+        except ValueError:
+            messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=self.root)
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
+
 
     def periodic_update(self):
         if not self.root.winfo_exists(): return
@@ -546,6 +603,7 @@ class AppGUI:
         self.root.after(250, self.periodic_update)
 
     def destroy_all_windows(self):
+        if self.settings_window and self.settings_window.winfo_exists(): self.settings_window.destroy()
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.destroy()
         if self.root and self.root.winfo_exists(): self.root.destroy()
 
@@ -556,12 +614,14 @@ class AppGUI:
 
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
+            print("Tự động lưu cấu hình hiện tại trước khi thoát...")
+            self.apply_and_save_config(show_message=False) # Lưu lại các thay đổi cuối cùng
             self.on_close_callback(shutdown=True)
 
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10)
         main.pack(fill="both", expand=True)
-        main.grid_columnconfigure(1, weight=1) 
+        main.grid_columnconfigure(1, weight=1)
         main.grid_columnconfigure(0, weight=0)
         main.grid_rowconfigure(0, weight=1)
         self.create_left_panel(main)
@@ -600,7 +660,7 @@ class AppGUI:
         led_panel.grid_columnconfigure(1, weight=1)
         ttk.Button(led_panel, text="Kiểm tra LED", command=self.on_check_led_click).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
         ttk.Button(led_panel, text="Thoát", command=self.exit_program_graceful, bootstyle="secondary-outline").grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-    
+
     def update_status_label(self):
         if self.status_label.cget("text") != self.backend.status_text or self.status_label.cget("foreground") != self.backend.status_color:
             self.status_label.config(text=self.backend.status_text, foreground=self.backend.status_color)
@@ -716,7 +776,7 @@ class AppGUI:
         start = self.current_start_index
         end = min(total_points, start + self.points_per_view)
         return start, end
-        
+
     def _prepare_plot_data(self, data_slice, start_index):
         unit = self.unit_selector.get()
         conversion_factor = self.CONVERSION_FACTORS.get(unit, 1.0)
@@ -776,7 +836,7 @@ class AppGUI:
             total_points = len(self.backend.plot_data_points)
             if total_points > self.points_per_view:
                 self.current_start_index = max(0, total_points - self.points_per_view)
-            else: 
+            else:
                 self.current_start_index = 0
             self.update_plot()
 
@@ -791,7 +851,7 @@ class AppGUI:
         if self.auto_follow_var.get():
             self.auto_follow_var.set(False)
         total_points = len(self.backend.plot_data_points)
-        if total_points <= self.points_per_view: 
+        if total_points <= self.points_per_view:
             return
         max_start_index = total_points - self.points_per_view
         self.current_start_index = int((float(value_str) / 100) * max_start_index)
@@ -806,7 +866,7 @@ class AppGUI:
         self.chart_window = None
 
 # ==============================================================================
-# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER) - KHÔNG THAY ĐỔI
+# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
 # ==============================================================================
 class MainController:
     def __init__(self, backend, command_queue):
@@ -828,13 +888,13 @@ class MainController:
             elif command == 'restart': self.handle_restart()
         except queue.Empty: pass
         finally:
-            if not self.backend.exiting and self.root.winfo_exists(): 
+            if not self.backend.exiting and self.root.winfo_exists():
                 self.root.after(100, self.check_for_commands)
 
     def create_gui_window(self):
         if self.app_instance and self.app_instance.root.winfo_exists():
-            print("Giao diện đã đang chạy."); self.app_instance.root.lift(); 
-            return        
+            print("Giao diện đã đang chạy."); self.app_instance.root.lift();
+            return
         print("Đang khởi động giao diện người dùng...")
         toplevel_window = tk.Toplevel(self.root)
         self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
@@ -856,7 +916,7 @@ class MainController:
         self.handle_shutdown(silent=True)
 
 # ==============================================================================
-# KHỐI THỰC THI CHÍNH (MAIN) - KHÔNG THAY ĐỔI
+# KHỐI THỰC THI CHÍNH (MAIN)
 # ==============================================================================
 needs_restart = False
 command_queue = queue.Queue()
