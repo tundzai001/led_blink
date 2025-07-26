@@ -22,6 +22,7 @@ import numpy as np
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 import pygame
 import RPi.GPIO as GPIO
+
 # --- CÁC HẰNG SỐ TOÀN CỤC ---
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 CONFIG_FILE = 'config.ini'
@@ -470,7 +471,6 @@ class AppGUI:
     def create_left_panel(self, parent):
         left = ttk.LabelFrame(parent, text="Cài đặt MQTT", padding=10)
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
-        left.grid_rowconfigure(6, weight=1) # Cho phép text box mở rộng
 
         def add_labeled_entry(frame, label, row, show=None):
             ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
@@ -486,14 +486,20 @@ class AppGUI:
         show_btn.grid(row=3, column=2, sticky="e")
         self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
 
-        ttk.Label(left, text="Subscribe Topics:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.topic_input = tk.Text(left, height=8, width=35, relief="solid", borderwidth=1)
-        self.topic_input.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
+        # ---- SỬA ĐỔI: Chia ô Sub topic thành hai ô Water và GNSS ----
+        ttk.Label(left, text="Water Sub Topic:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        self.water_topic_entry = ttk.Entry(left)
+        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="ew")
 
-        # Nút Cài đặt mới
-        ttk.Button(left, text="Cài đặt", command=self.open_settings_window, bootstyle="secondary").grid(row=7, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+        ttk.Label(left, text="GNSS Sub Topic:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
+        self.gnss_topic_entry = ttk.Entry(left)
+        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="ew")
+        # ---- KẾT THÚC SỬA ĐỔI ----
 
-        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=8, column=0, columnspan=3, sticky="ew", pady=(5,0))
+        # Điều chỉnh vị trí các nút bên dưới
+        ttk.Button(left, text="Cài đặt", command=self.open_settings_window, bootstyle="secondary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 5))
+        ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5,0))
+
 
     def open_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -538,23 +544,41 @@ class AppGUI:
         self.user_entry.insert(0, self.backend.username)
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
-        self.topic_input.insert("1.0", "\n".join(self.backend.subscribe_topics))
+        
+        # ---- SỬA ĐỔI: Tải dữ liệu vào hai ô topic ----
+        topics = self.backend.subscribe_topics
+        if len(topics) > 0:
+            self.water_topic_entry.insert(0, topics[0])
+        if len(topics) > 1:
+            self.gnss_topic_entry.insert(0, topics[1])
+        # ---- KẾT THÚC SỬA ĐỔI ----
+
         # Load dữ liệu ngưỡng vào các biến StringVar
         self.warning_threshold_var.set(str(self.backend.warning_threshold))
         self.critical_threshold_var.set(str(self.backend.critical_threshold))
 
     def apply_and_save_config(self, show_message=True):
-        # Lấy giá trị ngưỡng từ các biến StringVar, chúng luôn tồn tại
-        # ngay cả khi cửa sổ cài đặt đã đóng.
+        # Lấy giá trị ngưỡng từ các biến StringVar
         warning_thresh_val = self.warning_threshold_var.get()
         critical_thresh_val = self.critical_threshold_var.get()
+
+        # ---- SỬA ĐỔI: Lấy dữ liệu từ hai ô topic ----
+        water_topic = self.water_topic_entry.get().strip()
+        gnss_topic = self.gnss_topic_entry.get().strip()
+        all_topics_list = []
+        if water_topic:
+            all_topics_list.append(water_topic)
+        if gnss_topic:
+            all_topics_list.append(gnss_topic)
+        topics_string = "\n".join(all_topics_list)
+        # ---- KẾT THÚC SỬA ĐỔI ----
 
         settings = {
             'broker': self.broker_entry.get(),
             'port': self.port_entry.get(),
             'username': self.user_entry.get(),
             'password': self.pass_entry.get(),
-            'topics': self.topic_input.get("1.0", "end").strip(),
+            'topics': topics_string,
             'publish': self.pub_entry.get(),
             'warning_threshold': warning_thresh_val,
             'critical_threshold': critical_thresh_val
