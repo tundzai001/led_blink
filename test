@@ -279,33 +279,33 @@ class Backend:
                 settings_cfg = self.config["Settings"]
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
                 self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
-                if "GNSS_Classification" in self.config:
-                    gnss_cfg = self.config["GNSS_Classification"]
+            if "GNSS_Classification" in self.config:
+                gnss_cfg = self.config["GNSS_Classification"]
                 # Tạo dictionary để nhóm các thuộc tính theo item
-                    items_dict = {}
-                    for key, value in gnss_cfg.items():
-                        if key.startswith('item_'):
-                            parts = key.split('_', 2)  # item_0_name -> ['item', '0', 'name']
-                            if len(parts) == 3:
-                                item_index = int(parts[1])
-                                attr_name = parts[2]
-                                if item_index not in items_dict:
-                                    items_dict[item_index] = {}
+                items_dict = {}
+                for key, value in gnss_cfg.items():
+                    if key.startswith('item_'):
+                        parts = key.split('_', 2)  # item_0_name -> ['item', '0', 'name']
+                        if len(parts) == 3:
+                            item_index = int(parts[1])
+                            attr_name = parts[2]
+                            if item_index not in items_dict:
+                                items_dict[item_index] = {}
                             # Chuyển đổi kiểu dữ liệu phù hợp
-                                if attr_name == 'name':
-                                    items_dict[item_index][attr_name] = value
-                                else:
-                                    try:
+                            if attr_name == 'name':
+                                items_dict[item_index][attr_name] = value
+                            else:
+                                try:
                                     # Thử chuyển thành float, nếu không được thì giữ nguyên string
-                                        items_dict[item_index][attr_name] = float(value) if value else ""
-                                    except ValueError:
-                                        items_dict[item_index][attr_name] = value
+                                    items_dict[item_index][attr_name] = float(value) if value else ""
+                                except ValueError:
+                                    items_dict[item_index][attr_name] = value
                 
                 # Chuyển dictionary thành list theo thứ tự index
-                    if items_dict:
-                        self.gnss_speed_classification = []
-                        for i in sorted(items_dict.keys()):
-                            self.gnss_speed_classification.append(items_dict[i])
+                if items_dict:
+                    self.gnss_speed_classification = []
+                    for i in sorted(items_dict.keys()):
+                        self.gnss_speed_classification.append(items_dict[i])
             print("Đã tải cấu hình.")
             self._load_audio_files()
         except Exception as e:
@@ -964,11 +964,11 @@ class AppGUI:
             self.gnss_tree.insert("", "end", values=value, tags=(str(i),))
 
     def edit_gnss_classification(self):
-        selected_items = self.gnss_tree.selection()
+        selected = self.gnss_tree.selection()
         if not selected:
             messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để chỉnh sửa.", parent=self.settings_window)
             return
-        item = selected_items[0]
+        item = selected[0]
         index = int(self.gnss_tree.item(item)["tags"][0])
         self.open_classification_editor(index)
 
