@@ -363,42 +363,10 @@ class Backend:
 
     def handle_gnss_report(self, data: dict):
         try:
-            received_velocities = data.get("velocities", {})
-        
-            # **THAY ĐỔI: Chọn giá trị và đơn vị hiển thị dựa trên cài đặt**
-            display_value = 0
-            display_unit = "N/A"
-            primary_velocity_mm_s = 0 # Dùng để phân loại
+            # Lấy vận tốc tức thời (luôn được gửi kèm) để phục vụ việc phân loại
+            primary_velocity_mm_s = data.get("classification_velocity_mm_s", 0)
 
-        # Xác định đơn vị hiển thị theo thứ tự ưu tiên
-            if self.gnss_time_settings.get('calculate_per_minute') and 'm_phut' in received_velocities:
-                display_value = received_velocities['m_phut']
-                display_unit = 'm/phút'
-            elif self.gnss_time_settings.get('calculate_per_hour') and 'm_gio' in received_velocities:
-                display_value = received_velocities['m_gio']
-                display_unit = 'm/giờ'
-            elif self.gnss_time_settings.get('calculate_per_day') and 'm_ngay' in received_velocities:
-                display_value = received_velocities['m_ngay']
-                display_unit = 'm/ngày'
-            elif self.gnss_time_settings.get('calculate_per_month') and 'm_thang' in received_velocities:
-                display_value = received_velocities['m_thang']
-                display_unit = 'm/tháng'
-            elif self.gnss_time_settings.get('calculate_per_second') and 'mm_giay' in received_velocities:
-                 # Ưu tiên hiển thị mm/giây cho đơn vị giây
-                display_value = received_velocities['mm_giay']
-                display_unit = 'mm/giây'
-            else: # Fallback nếu không có lựa chọn nào khớp
-                if 'mm_giay' in received_velocities:
-                    display_value = received_velocities['mm_giay']
-                    display_unit = 'mm/giây'
-
-        # Luôn dùng mm/giây để so sánh với bảng phân loại (nếu có)
-            if 'mm_giay' in received_velocities:
-                primary_velocity_mm_s = received_velocities['mm_giay']
-            elif 'm_giay' in received_velocities: # Dự phòng nếu mm/giay không có
-                primary_velocity_mm_s = received_velocities['m_giay'] * 1000
-
-        # Logic phân loại giữ nguyên, nhưng dựa trên primary_velocity_mm_s
+            # Logic phân loại dựa trên vận tốc tức thời (giữ nguyên như cũ)
             classification_name = "Không xác định"
             sorted_classification = sorted(
                 [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and str(item.get('mm_giay')).strip() != ''],
@@ -411,20 +379,28 @@ class Backend:
                     classification_name = level.get('name', 'Không xác định')
                     break
             else:
+                # Nếu vận tốc > 0 nhưng không đạt ngưỡng nào, nó là "Rất chậm"
                 if primary_velocity_mm_s > 0:
                     classification_name = "Rất chậm"
 
+        # Lấy các thông tin đã được tính toán và định dạng sẵn bởi shifting.py
             name = data.get("sensorname", "GNSS")
-            value_str = f"{display_value:.4f} {display_unit}" # Hiển thị giá trị đã chọn
+            display_value = data.get("value", 0)
+            display_unit = data.get("unit", "N/A")
+            value_str = f"{display_value:.4f} {display_unit}"
+        
             status = classification_name
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
         
+            # Tạo bản ghi để hiển thị
             record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
         
+            # Cập nhật các dữ liệu nền
             self.sensor_data.append(record)
             threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
         
+        # Trả về bản ghi để GUI hiển thị
             return record
 
         except Exception as e:
