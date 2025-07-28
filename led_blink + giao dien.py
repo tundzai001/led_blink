@@ -74,6 +74,14 @@ class Backend:
         self.setup_audio_mixer()
         self.setup_gpio()
         self.load_config()
+        self.gnss_speed_classification = [
+            {"name": "Nguy cấp", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": 18000, "m_phut": 300, "m_giay": 5, "mm_giay": 5000},
+            {"name": "Rất nhanh", "m_nam": "", "m_thang": "", "m_ngay": 4320, "m_gio": 180, "m_phut": 3, "m_giay": 0.05, "mm_giay": 50},
+            {"name": "Nhanh", "m_nam": 1296.0000, "m_thang": 43.2, "m_ngay": 1.8, "m_gio": 0.03, "m_phut": 0.0005, "m_giay": 0.5, "mm_giay": 0.5},
+            {"name": "Trung bình", "m_nam": 157.68, "m_thang": 12.9600, "m_ngay": 0.432, "m_gio": 0.018, "m_phut": 0.0003, "m_giay": 0.000005, "mm_giay": 0.005},
+            {"name": "Chậm", "m_nam": 0.158, "m_thang": 0.0130, "m_ngay": 0.000432, "m_gio": 0.0000018, "m_phut": 3e-07, "m_giay": 5e-09, "mm_giay": 0.000005},
+            {"name": "Rất chậm", "m_nam": 0.017, "m_thang": 0.0014, "m_ngay": 4.75e-05, "m_gio": 1.98e-06, "m_phut": 3.3e-08, "m_giay": 5.5e-10, "mm_giay": 5.5e-07}
+        ]
 
     def setup_audio_mixer(self):
         try:
@@ -265,27 +273,79 @@ class Backend:
                 self.port = mqtt_cfg.getint("port", self.port)
                 self.username = mqtt_cfg.get("username", self.username)
                 self.password = mqtt_cfg.get("password", self.password)
-                self.subscribe_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
+                
+                # ---- SỬA ĐỔI: Tải cấu hình cho 2 sub topic riêng biệt ----
+                # Ưu tiên tải từ các key mới
+                water_topic = mqtt_cfg.get("water_sub_topic", None)
+                gnss_topic = mqtt_cfg.get("gnss_sub_topic", None)
+
+                self.subscribe_topics = []
+                if water_topic is not None: # Nếu key mới 'water_sub_topic' tồn tại
+                    if water_topic: self.subscribe_topics.append(water_topic)
+                    if gnss_topic: self.subscribe_topics.append(gnss_topic)
+                else: # Xử lý cho file config cũ (tương thích ngược)
+                    old_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
+                    self.subscribe_topics = old_topics
+                # ---- KẾT THÚC SỬA ĐỔI ----
+
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
             if "Settings" in self.config:
                 settings_cfg = self.config["Settings"]
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
                 self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
+            if "GNSS_Classification" in self.config:
+                gnss_cfg = self.config["GNSS_Classification"]
+                # Tạo dictionary để nhóm các thuộc tính theo item
+                items_dict = {}
+                for key, value in gnss_cfg.items():
+                    if key.startswith('item_'):
+                        parts = key.split('_', 2)  # item_0_name -> ['item', '0', 'name']
+                        if len(parts) == 3:
+                            item_index = int(parts[1])
+                            attr_name = parts[2]
+                            if item_index not in items_dict:
+                                items_dict[item_index] = {}
+                            # Chuyển đổi kiểu dữ liệu phù hợp
+                            if attr_name == 'name':
+                                items_dict[item_index][attr_name] = value
+                            else:
+                                try:
+                                    # Thử chuyển thành float, nếu không được thì giữ nguyên string
+                                    items_dict[item_index][attr_name] = float(value) if value else ""
+                                except ValueError:
+                                    items_dict[item_index][attr_name] = value
+                
+                # Chuyển dictionary thành list theo thứ tự index
+                if items_dict:
+                    self.gnss_speed_classification = []
+                    for i in sorted(items_dict.keys()):
+                        self.gnss_speed_classification.append(items_dict[i])
             print("Đã tải cấu hình.")
             self._load_audio_files()
         except Exception as e:
             print(f"Lỗi khi tải cấu hình từ {CONFIG_FILE}: {e}")
 
     def save_config(self):
+        # ---- SỬA ĐỔI: Lưu cấu hình cho 2 sub topic riêng biệt ----
+        water_topic = self.subscribe_topics[0] if len(self.subscribe_topics) > 0 else ""
+        gnss_topic = self.subscribe_topics[1] if len(self.subscribe_topics) > 1 else ""
+        
         self.config['MQTT'] = {
             'broker': self.broker, 'port': self.port, 'username': self.username,
-            'password': self.password, 'topics': "\n".join(self.subscribe_topics),
+            'password': self.password,
+            'water_sub_topic': water_topic,
+            'gnss_sub_topic': gnss_topic,
             'publish': self.publish_topic
         }
+        # ---- KẾT THÚC SỬA ĐỔI ----
         self.config['Settings'] = {
             'warning_threshold': self.warning_threshold,
             'critical_threshold': self.critical_threshold
         }
+        self.config['GNSS_Classification'] = {}
+        for i, item in enumerate(self.gnss_speed_classification):
+            for key, value in item.items():
+                self.config['GNSS_Classification'][f'item_{i}_{key}'] = str(value)
         try:
             with open(CONFIG_FILE, 'w') as f: self.config.write(f)
             print("Đã lưu cấu hình.")
@@ -488,17 +548,19 @@ class AppGUI:
 
         # ---- SỬA ĐỔI: Chia ô Sub topic thành hai ô Water và GNSS ----
         ttk.Label(left, text="Water Sub Topic:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.water_topic_entry = ttk.Entry(left)
-        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="ew")
+        self.water_topic_entry = tk.Text(left, height=2, width=35, relief="solid", borderwidth=1)
+        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
 
         ttk.Label(left, text="GNSS Sub Topic:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.gnss_topic_entry = ttk.Entry(left)
-        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="ew")
+        self.gnss_topic_entry = tk.Text(left, height=2, width=35, relief="solid", borderwidth=1)
+        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
         # ---- KẾT THÚC SỬA ĐỔI ----
 
         # Điều chỉnh vị trí các nút bên dưới
         ttk.Button(left, text="Cài đặt", command=self.open_settings_window, bootstyle="secondary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5,0))
+        left.grid_rowconfigure(6, weight=1)
+        left.grid_rowconfigure(8, weight=1)
 
 
     def open_settings_window(self):
@@ -508,7 +570,7 @@ class AppGUI:
 
         self.settings_window = Toplevel(self.root)
         self.settings_window.title("Cài đặt Nâng cao")
-        self.settings_window.geometry("400x250")
+        self.settings_window.geometry("800x600")
         self.settings_window.transient(self.root) # Giữ cửa sổ này luôn ở trên cửa sổ chính
 
         notebook = ttk.Notebook(self.settings_window)
@@ -517,7 +579,24 @@ class AppGUI:
         # Tab 1: GNSS
         gnss_frame = ttk.Frame(notebook, padding="10")
         notebook.add(gnss_frame, text='GNSS')
-        ttk.Label(gnss_frame, text="Các cài đặt cho GNSS sẽ được bổ sung tại đây.").pack(pady=20)
+        classification_frame = ttk.LabelFrame(gnss_frame, text="Bảng phân loại tốc độ dịch chuyển", padding="10")
+        classification_frame.pack(fill="both", expand=True, pady=(0, 10))
+        columns = ("Phân loại", "m/năm", "m/tháng", "m/ngày", "m/giờ", "m/phút", "m/giây", "mm/giây")
+        self.gnss_tree = ttk.Treeview(classification_frame, columns=columns, show="headings", height=8)
+        for col in columns:
+            self.gnss_tree.heading(col, text=col)
+            self.gnss_tree.column(col, width=90, anchor="center")
+        tree_scrollbar = ttk.Scrollbar(classification_frame, orient="vertical", command=self.gnss_tree.yview)
+        self.gnss_tree.configure(yscrollcommand=tree_scrollbar.set)
+        self.gnss_tree.pack(side="left", fill="both", expand=True)
+        tree_scrollbar.pack(side="right", fill="y")
+        self.load_gnss_classification_data()
+        control_frame = ttk.Frame(gnss_frame)
+        control_frame.pack(fill="x", pady=(10, 0))
+        ttk.Button(control_frame, text="Chỉnh sửa", command=self.edit_gnss_classification).pack(side="left", padx=(0, 5))
+        ttk.Button(control_frame, text="Thêm mới", command=self.add_gnss_classification).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="Xóa", command=self.delete_gnss_classification).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="Khôi phục mặc định", command=self.reset_gnss_classification).pack(side="left", padx=5)
 
         # Tab 2: Mực nước
         water_level_frame = ttk.Frame(notebook, padding="10")
@@ -534,7 +613,7 @@ class AppGUI:
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
 
         # Nút để đóng cửa sổ cài đặt
-        ttk.Button(self.settings_window, text="Đóng", command=self.settings_window.destroy).pack(pady=10)
+        ttk.Button(self.settings_window, text="Lưu & Đóng", command=self.save_and_close_settings).pack(pady=10)
 
 
     def load_initial_data(self):
@@ -546,25 +625,27 @@ class AppGUI:
         self.pub_entry.insert(0, self.backend.publish_topic)
         
         # ---- SỬA ĐỔI: Tải dữ liệu vào hai ô topic ----
+        self.water_topic_entry.delete("1.0", tk.END)
+        self.gnss_topic_entry.delete("1.0", tk.END)
         topics = self.backend.subscribe_topics
         if len(topics) > 0:
-            self.water_topic_entry.insert(0, topics[0])
+            self.water_topic_entry.insert("1.0", topics[0])
         if len(topics) > 1:
-            self.gnss_topic_entry.insert(0, topics[1])
+            self.gnss_topic_entry.insert("1.0", topics[1])
         # ---- KẾT THÚC SỬA ĐỔI ----
 
         # Load dữ liệu ngưỡng vào các biến StringVar
         self.warning_threshold_var.set(str(self.backend.warning_threshold))
         self.critical_threshold_var.set(str(self.backend.critical_threshold))
 
-    def apply_and_save_config(self, show_message=True):
+    def apply_and_save_config(self, show_message=True, parent_window=None):
         # Lấy giá trị ngưỡng từ các biến StringVar
         warning_thresh_val = self.warning_threshold_var.get()
         critical_thresh_val = self.critical_threshold_var.get()
 
         # ---- SỬA ĐỔI: Lấy dữ liệu từ hai ô topic ----
-        water_topic = self.water_topic_entry.get().strip()
-        gnss_topic = self.gnss_topic_entry.get().strip()
+        water_topic = self.water_topic_entry.get("1.0", "end-1c").strip()
+        gnss_topic = self.gnss_topic_entry.get("1.0", "end-1c").strip()
         all_topics_list = []
         if water_topic:
             all_topics_list.append(water_topic)
@@ -572,6 +653,9 @@ class AppGUI:
             all_topics_list.append(gnss_topic)
         topics_string = "\n".join(all_topics_list)
         # ---- KẾT THÚC SỬA ĐỔI ----
+
+        if parent_window is None:
+            parent_window = self.root
 
         settings = {
             'broker': self.broker_entry.get(),
@@ -589,12 +673,14 @@ class AppGUI:
             float(settings['critical_threshold'])
             self.backend.update_and_reconnect(settings)
             if show_message:
-                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
+                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=parent_window)
+            return True
         except ValueError:
-            messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=self.root)
+            messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=parent_window)
+            return False
         except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
-
+            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=parent_window)
+            return False
 
     def periodic_update(self):
         if not self.root.winfo_exists(): return
@@ -639,7 +725,7 @@ class AppGUI:
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
             print("Tự động lưu cấu hình hiện tại trước khi thoát...")
-            self.apply_and_save_config(show_message=False) # Lưu lại các thay đổi cuối cùng
+            self.apply_and_save_config(show_message=False, parent_window=self.root) # Lưu lại các thay đổi cuối cùng
             self.on_close_callback(shutdown=True)
 
     def create_widgets(self):
@@ -888,7 +974,136 @@ class AppGUI:
         plt.close(self.fig)
         self.chart_window.destroy()
         self.chart_window = None
+    
+    def load_gnss_classification_data(self):
+        for item in self.gnss_tree.get_children():
+            self.gnss_tree.delete(item)
+        for i, classification in enumerate(self.backend.gnss_speed_classification):
+            value = (
+                classification["name"],
+                classification["m_nam"] if classification["m_nam"] != "" else "-",
+                classification["m_thang"] if classification["m_thang"] != "" else "-",
+                classification["m_ngay"] if classification["m_ngay"] != "" else "-",
+                classification["m_gio"],
+                classification["m_phut"],
+                classification["m_giay"],
+                classification["mm_giay"]
+            )
+            self.gnss_tree.insert("", "end", values=value, tags=(str(i),))
 
+    def edit_gnss_classification(self):
+        selected = self.gnss_tree.selection()
+        if not selected:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để chỉnh sửa.", parent=self.settings_window)
+            return
+        item = selected[0]
+        index = int(self.gnss_tree.item(item)["tags"][0])
+        self.open_classification_editor(index)
+
+    def add_gnss_classification(self):
+        new_item = {
+            "name": "Mới",
+            "m_nam": "",
+            "m_thang": "",
+            "m_ngay": "",
+            "m_gio": 0,
+            "m_phut": 0,
+            "m_giay": 0,
+            "mm_giay": 0
+        }
+        self.backend.gnss_speed_classification.append(new_item)
+        self.load_gnss_classification_data()
+        self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
+
+    def delete_gnss_classification(self):
+        selected = self.gnss_tree.selection()
+        if not selected:
+            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để xóa.", parent=self.settings_window)
+            return
+    
+        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa mục này?", parent=self.settings_window):
+            item = selected[0]
+            index = int(self.gnss_tree.item(item)["tags"][0])
+            del self.backend.gnss_speed_classification[index]
+            self.load_gnss_classification_data()
+            self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
+
+    def reset_gnss_classification(self):
+        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn khôi phục bảng về giá trị mặc định?", parent=self.settings_window):
+            self.backend.gnss_speed_classification = [
+                {"name": "Nguy cấp", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": 18000, "m_phut": 300, "m_giay": 5, "mm_giay": 5000},
+                {"name": "Rất nhanh", "m_nam": "", "m_thang": "", "m_ngay": 4320, "m_gio": 180, "m_phut": 3, "m_giay": 0.05, "mm_giay": 50},
+                {"name": "Nhanh", "m_nam": 1296.0000, "m_thang": 43.2, "m_ngay": 1.8, "m_gio": 0.03, "m_phut": 0.0005, "m_giay": 0.5, "mm_giay": 0.5},
+                {"name": "Trung bình", "m_nam": 157.68, "m_thang": 12.9600, "m_ngay": 0.432, "m_gio": 0.018, "m_phut": 0.0003, "m_giay": 0.000005, "mm_giay": 0.005},
+                {"name": "Chậm", "m_nam": 0.158, "m_thang": 0.0130, "m_ngay": 0.000432, "m_gio": 0.0000018, "m_phut": 3e-07, "m_giay": 5e-09, "mm_giay": 0.000005},
+                {"name": "Rất chậm", "m_nam": 0.017, "m_thang": 0.0014, "m_ngay": 4.75e-05, "m_gio": 1.98e-06, "m_phut": 3.3e-08, "m_giay": 5.5e-10, "mm_giay": 5.5e-07}
+            ]
+            self.load_gnss_classification_data()
+            self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
+
+    def open_classification_editor(self, index):
+        editor_window = Toplevel(self.settings_window)
+        editor_window.title("Chỉnh sửa phân loại tốc độ")
+        editor_window.geometry("400x350")
+        editor_window.transient(self.settings_window)
+        editor_window.grab_set()  # Modal dialog
+        classification = self.backend.gnss_speed_classification[index]
+    
+    # Tạo các biến StringVar cho từng trường
+        vars_dict = {}
+        fields = [
+            ("Tên phân loại:", "name"),
+            ("m/năm:", "m_nam"),
+            ("m/tháng:", "m_thang"), 
+            ("m/ngày:", "m_ngay"),
+            ("m/giờ:", "m_gio"),
+            ("m/phút:", "m_phut"),
+            ("m/giây:", "m_giay"),
+            ("mm/giây:", "mm_giay")
+        ]
+    
+        for label, key in fields:
+            vars_dict[key] = tk.StringVar(value=str(classification[key]))
+    
+    # Tạo form
+        main_frame = ttk.Frame(editor_window, padding="10")
+        main_frame.pack(fill="both", expand=True)
+    
+        for i, (label, key) in enumerate(fields):
+            ttk.Label(main_frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=5)
+            entry = ttk.Entry(main_frame, textvariable=vars_dict[key])
+            entry.grid(row=i, column=1, sticky="ew", pady=5, padx=5)
+            main_frame.grid_columnconfigure(1, weight=1)
+    
+    # Nút điều khiển
+        button_frame = ttk.Frame(editor_window)
+        button_frame.pack(fill="x", pady=10)
+
+        def save_changes():
+            try:
+                for key, var in vars_dict.items():
+                    value = var.get().strip()
+                    if key == "name":
+                        classification[key] = value
+                    else:
+                        classification[key] = float(value) if value else ""
+            
+                self.load_gnss_classification_data()
+                self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
+                messagebox.showinfo("Thành công", "Đã lưu thay đổi.", parent=editor_window)
+                editor_window.destroy()
+            except ValueError as e:
+                messagebox.showerror("Lỗi", "Giá trị số không hợp lệ. Vui lòng kiểm tra lại.", parent=editor_window)
+    
+        ttk.Button(button_frame, text="Lưu", command=save_changes).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Hủy", command=editor_window.destroy).pack(side="left", padx=5)
+
+    def save_and_close_settings(self):
+        # Gọi hàm lưu chính, hàm này sẽ lấy dữ liệu từ tất cả các ô input và lưu
+        success = self.apply_and_save_config(show_message=False, parent_window=self.settings_window)
+        if success:
+            messagebox.showinfo("Thành công", "Đã lưu tất cả cài đặt.", parent=self.settings_window)
+            self.settings_window.destroy()
 # ==============================================================================
 # KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
 # ==============================================================================
