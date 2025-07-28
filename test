@@ -324,30 +324,35 @@ class Backend:
         if not self.listening or self.exiting: return
         try:
             data = json.loads(msg.payload.decode('utf-8'))
-            if "value" not in data:
+            if data.get("type") == "gnss_velocity_report":
+                # Nếu là tin nhắn từ shifting.py, gọi hàm xử lý riêng
+                self.handle_gnss_report(data)
+            elif "value" in data:
+                # Nếu là tin nhắn cảm biến mực nước (như cũ), xử lý cảnh báo
+                value = float(data.get("value"))
+                new_level = self.alert_manager.process_new_value(value)
+
+                name = data.get("sensorname", msg.topic)
+                ts = float(data.get("timestamp", time.time()))
+                dt_object = datetime.fromtimestamp(ts)
+                status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
+                
+                # Hiển thị giá trị gốc (mét) cho cảm biến nước
+                record = (name, f"{value:.4f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
+                self.sensor_data.append(record)
+                self.plot_data_points.append((dt_object, value))
+                self.gui_update_queue.put(record)
+
+                threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
+                if new_level > 0:
+                    threading.Thread(target=self.flash_led, args=(Constants.LED2_PIN,), daemon=True).start()
+
+                if self.publish_topic:
+                    payload_out_str = f"{name},{value},{status},{ts}"
+                    self.client.publish(self.publish_topic, payload_out_str)
+            else:
                 logger.info(f"Nhận được tin nhắn không phải dữ liệu từ topic '{msg.topic}', bỏ qua.")
                 return
-
-            value = float(data.get("value"))
-            new_level = self.alert_manager.process_new_value(value)
-
-            name = data.get("sensorname", msg.topic)
-            ts = float(data.get("timestamp", time.time()))
-            dt_object = datetime.fromtimestamp(ts)
-            status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
-            
-            record = (name, str(value), status, dt_object.strftime("%H:%M:%S %d-%m"))
-            self.sensor_data.append(record)
-            self.plot_data_points.append((dt_object, value))
-            self.gui_update_queue.put(record)
-
-            threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
-            if new_level > 0:
-                threading.Thread(target=self.flash_led, args=(Constants.LED2_PIN,), daemon=True).start()
-
-            if self.publish_topic:
-                payload_out_str = f"{name},{value},{status},{ts}"
-                self.client.publish(self.publish_topic, payload_out_str)
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.error(f"Lỗi xử lý message: {e} | Payload: {msg.payload.decode('utf-8', errors='ignore')}")
