@@ -280,7 +280,7 @@ class Backend:
             return
         try:
             command = [
-                sys.executable, '-u', 'shifting.py', # Thêm cờ '-u' để vô hiệu hóa buffering
+                sys.executable, '-u', 'shifting.py',
                 '--broker', self.broker,
                 '--port', str(self.port),
                 '--username', self.username,
@@ -289,27 +289,37 @@ class Backend:
             for topic in self.gnss_topics:
                 command.extend(['--topic', topic])
         
+        # **THÊM MỚI: Gửi các cờ điều khiển thời gian**
+            if self.gnss_time_settings.get('calculate_per_second'):
+                command.append('--calc-second')
+            if self.gnss_time_settings.get('calculate_per_minute'):
+                command.append('--calc-minute')
+            if self.gnss_time_settings.get('calculate_per_hour'):
+                command.append('--calc-hour')
+            if self.gnss_time_settings.get('calculate_per_day'):
+                command.append('--calc-day')
+            if self.gnss_time_settings.get('calculate_per_month'):
+                command.append('--calc-month')
+        
             logger.info(f"Đang khởi chạy shifting.py với lệnh: {' '.join(command)}")
+
             self.shifting_process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-            # Không dùng text=True, đọc trực tiếp dưới dạng bytes để kiểm soát tốt hơn
             )
         
-        # Bắt đầu luồng đọc kết quả từ stdout
             threading.Thread(
                 target=self._read_shifting_output,
                 args=(self.shifting_process.stdout,),
                 daemon=True,
-                name="ShiftingOutputReader" # Đặt tên cho luồng để dễ debug
+                name="ShiftingOutputReader"
             ).start()
         
             logger.info("Đã khởi động tiến trình shifting.py và luồng đọc kết quả.")
 
         except Exception as e:
             logger.error(f"Lỗi khởi động shifting.py: {e}")
-        # Đảm bảo dọn dẹp nếu có lỗi
             if self.shifting_process:
                 self.shifting_process.kill()
                 self.shifting_process = None
@@ -353,44 +363,74 @@ class Backend:
 
     def handle_gnss_report(self, data: dict):
         try:
-            classification_name = "Không xác định"
             received_velocities = data.get("velocities", {})
+        
+            # **THAY ĐỔI: Chọn giá trị và đơn vị hiển thị dựa trên cài đặt**
+            display_value = 0
+            display_unit = "N/A"
+            primary_velocity_mm_s = 0 # Dùng để phân loại
+
+        # Xác định đơn vị hiển thị theo thứ tự ưu tiên
+            if self.gnss_time_settings.get('calculate_per_minute') and 'm_phut' in received_velocities:
+                display_value = received_velocities['m_phut']
+                display_unit = 'm/phút'
+            elif self.gnss_time_settings.get('calculate_per_hour') and 'm_gio' in received_velocities:
+                display_value = received_velocities['m_gio']
+                display_unit = 'm/giờ'
+            elif self.gnss_time_settings.get('calculate_per_day') and 'm_ngay' in received_velocities:
+                display_value = received_velocities['m_ngay']
+                display_unit = 'm/ngày'
+            elif self.gnss_time_settings.get('calculate_per_month') and 'm_thang' in received_velocities:
+                display_value = received_velocities['m_thang']
+                display_unit = 'm/tháng'
+            elif self.gnss_time_settings.get('calculate_per_second') and 'mm_giay' in received_velocities:
+                 # Ưu tiên hiển thị mm/giây cho đơn vị giây
+                display_value = received_velocities['mm_giay']
+                display_unit = 'mm/giây'
+            else: # Fallback nếu không có lựa chọn nào khớp
+                if 'mm_giay' in received_velocities:
+                    display_value = received_velocities['mm_giay']
+                    display_unit = 'mm/giây'
+
+        # Luôn dùng mm/giây để so sánh với bảng phân loại (nếu có)
+            if 'mm_giay' in received_velocities:
+                primary_velocity_mm_s = received_velocities['mm_giay']
+            elif 'm_giay' in received_velocities: # Dự phòng nếu mm/giay không có
+                primary_velocity_mm_s = received_velocities['m_giay'] * 1000
+
+        # Logic phân loại giữ nguyên, nhưng dựa trên primary_velocity_mm_s
+            classification_name = "Không xác định"
             sorted_classification = sorted(
-                [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and item.get('mm_giay') != ''],
+                [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and str(item.get('mm_giay')).strip() != ''],
                 key=lambda x: float(x.get('mm_giay')),
                 reverse=True
             )
-            
-            received_mm_per_sec = received_velocities.get('mm_giay')
-            
-            if received_mm_per_sec is not None:
-                if sorted_classification:
-                    for level in sorted_classification:
-                        threshold_mm_per_sec = level.get('mm_giay')
-                        if threshold_mm_per_sec is not None and received_mm_per_sec >= float(threshold_mm_per_sec):
-                            classification_name = level['name']
-                            break # Tìm thấy mức độ phù hợp đầu tiên (nhanh nhất)
-                    else: 
-                        classification_name = "Rất chậm"
+            for level in sorted_classification:
+                threshold = float(level.get('mm_giay', 0))
+                if primary_velocity_mm_s >= threshold:
+                    classification_name = level.get('name', 'Không xác định')
+                    break
+            else:
+                if primary_velocity_mm_s > 0:
+                    classification_name = "Rất chậm"
 
             name = data.get("sensorname", "GNSS")
-            # Hiển thị giá trị chính (mm/giây) và đơn vị
-            value_str = f"{data.get('value', 0):.4f} {data.get('unit', '')}" 
-            status = classification_name # **Đây là kết quả phân loại**
-            
+            value_str = f"{display_value:.4f} {display_unit}" # Hiển thị giá trị đã chọn
+            status = classification_name
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
-            
-            # Tạo bản ghi để hiển thị trên GUI
+        
             record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
+        
             self.sensor_data.append(record)
             threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
+        
             return record
 
         except Exception as e:
             logger.error(f"Lỗi xử lý báo cáo GNSS: {e}")
             return None
-    
+
     def stop_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None:
             try:
