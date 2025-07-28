@@ -835,45 +835,59 @@ class AppGUI:
     def periodic_update(self):
         if not self.root.winfo_exists(): return
         self.update_status_label()
-    
+
         new_updates = self.backend.get_gui_updates()
-    
+
         for item in new_updates:
             if item == Constants.DATA_CLEAR_SIGNAL:
                 self.sheet.set_sheet_data(data=[])
                 if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.clear_chart_data()
                 logger.info("GUI đã nhận tín hiệu và xóa bảng.")
-                continue # Xử lý xong, sang item tiếp theo
+                continue
 
-            # Kiểm tra xem item là tin nhắn từ cảm biến nước (tuple) hay GNSS (dict)
+            record = None
             if isinstance(item, dict) and item.get("type") == "gnss_velocity_report":
-                 # Đây là tin nhắn từ shifting.py, gọi hàm xử lý
-                record = self.backend.handle_gnss_report(item) # Hàm này sẽ trả về record để hiển thị
+                record = self.backend.handle_gnss_report(item)
             elif isinstance(item, tuple):
-                 # Đây là tin nhắn cảm biến nước đã được xử lý trước đó
                 record = item
-            else:
-                 continue # Bỏ qua các item không xác định
-
+        
             if record:
-                self.sheet.insert_rows(rows=len(self.sheet.get_sheet_data()), data=[record], add_new_rows=True)
-                self.sheet.dehighlight_all()
-                last_row_index = self.sheet.get_total_rows() - 1
-            
-                if last_row_index >= 0:
-                    self.sheet.see(row=last_row_index)
-                    status = record[2]
+                try:
+                # --- SỬA LỖI DỨT ĐIỂM THEO API CŨ ---
+
+                # BƯỚC 1: Xác định vị trí sẽ chèn dòng mới (chính là số dòng hiện tại)
+                    new_row_index = self.sheet.get_total_rows()
+
+                # BƯỚC 2: Chèn MỘT dòng TRỐNG vào vị trí đó.
+                # Tham số đầu tiên là SỐ LƯỢNG dòng (phải là 1 hoặc lớn hơn).
+                # Tham số thứ hai là VỊ TRÍ để bắt đầu chèn.
+                    self.sheet.insert_rows(1, new_row_index)
+
+                # BƯỚC 3: Điền dữ liệu (record) vào dòng trống vừa được tạo.
+                # Ta sử dụng hàm set_row_data() để làm việc này.
+                    self.sheet.set_row_data(new_row_index, record)
+
+                # --- KẾT THÚC SỬA LỖI ---
                 
-                    if status == "NGUY HIEM": highlight_color = "#F8D7DA"
-                    elif status == "CANH BAO": highlight_color = "#FFF3CD"
-                    elif status == "AN TOAN": highlight_color = "#D4EDDA"
-                    else: highlight_color = "#E9ECEF"
+                    self.sheet.dehighlight_all()
+                    last_row_index = self.sheet.get_total_rows() - 1
+            
+                    if last_row_index >= 0:
+                        self.sheet.see(row=last_row_index)
+                        status = record[2]
+                
+                        if status == "NGUY HIEM": highlight_color = "#F8D7DA"
+                        elif status == "CANH BAO": highlight_color = "#FFF3CD"
+                        elif status == "AN TOAN": highlight_color = "#D4EDDA"
+                        else: highlight_color = "#E9ECEF"
                     
-                    self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
+                        self.sheet.highlight_rows([last_row_index], bg=highlight_color, fg="black")
+                except Exception as e:
+                    logger.error(f"Lỗi khi chèn/cập nhật dòng trong tksheet: {e}")
 
         if self.chart_window and self.chart_window.winfo_exists(): 
             self.chart_window.update_plot()
-        
+    
         self.root.after(250, self.periodic_update)
 
     def on_close_window(self):
