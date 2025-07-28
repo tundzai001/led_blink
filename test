@@ -31,19 +31,29 @@ import RPi.GPIO as GPIO
 import pygame
 
 # ==============================================================================
-# ĐỀ XUẤT 7: LOGGING THAY VÌ PRINT
+# ĐỀ XUẤT 7: LOGGING THAY VÌ PRINT (PHIÊN BẢN ĐIỀU CHỈNH)
 # ==============================================================================
-# Cấu hình logger để ghi ra file 'sensor_monitor.log' và cả console
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('sensor_monitor.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Cấu hình logger để terminal chỉ hiển thị WARNING trở lên, file log ghi lại mọi thứ
 
+# --- BƯỚC 1: Lấy logger gốc và đặt mức thấp nhất là INFO ---
+# Điều này cho phép logger xử lý tất cả các thông điệp từ INFO trở lên
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# --- BƯỚC 2: Tạo formatter (định dạng chung cho các log) ---
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+# --- BƯỚC 3: Cấu hình handler cho FILE - Ghi lại mọi thứ (từ INFO) ---
+file_handler = logging.FileHandler('sensor_monitor.log', encoding='utf-8')
+file_handler.setLevel(logging.INFO)  # Đặt mức ghi cho file là INFO
+file_handler.setFormatter(log_formatter)
+logger.addHandler(file_handler)
+
+# --- BƯỚC 4: Cấu hình handler cho CONSOLE/TERMINAL - Chỉ hiển thị cảnh báo và lỗi ---
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.WARNING) # << ĐÂY LÀ THAY ĐỔI QUAN TRỌNG
+console_handler.setFormatter(log_formatter)
+logger.addHandler(console_handler)
 # ==============================================================================
 # ĐỀ XUẤT 8: QUẢN LÝ HẰNG SỐ
 # ==============================================================================
@@ -719,7 +729,7 @@ class AppGUI:
         self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"], show_row_index=True)
         self.sheet.pack(fill=tk.BOTH, expand=True)
         self.sheet.disable_bindings("all")
-        self.sheet.set_options(font=("Arial", 10), header_font=("Arial", 10, "bold"), align="center")
+        self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
         self.create_control_panel(right)
 
     def create_control_panel(self, parent_frame):
