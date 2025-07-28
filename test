@@ -248,7 +248,7 @@ class Backend:
         self.plot_data_points = deque(maxlen=Constants.MAX_PLOT_POINTS)
         
         self.gui_update_queue = queue.Queue()
-        self.client = mqtt.Client(protocol=mqtt.MQTTv311)
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message = self.on_message
@@ -412,14 +412,8 @@ class Backend:
             try:
                 logger.info("Đang dừng tiến trình shifting.py...")
                 self.shifting_process.terminate()
-            # Chờ stdout và stderr kết thúc
-                stdout, stderr = self.shifting_process.communicate(timeout=5)
-                if stdout:
-                    logger.info(f"Output cuối cùng từ shifting.py: {stdout}")
-                if stderr:
-                    logger.warning(f"Error cuối cùng từ shifting.py: {stderr}")
-
-                logger.info(f"Đã dừng thành công tiến trình shifting.py với mã thoát: {self.shifting_process.returncode}")
+                self.shifting_process.wait(timeout=5)
+                logger.info(f"Đã dừng thành công tiến trình shifting.py.")
             except subprocess.TimeoutExpired:
                 logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
                 self.shifting_process.kill()
@@ -636,7 +630,7 @@ class Backend:
         except Exception as e:
             logger.error(f"Lỗi nháy LED trên pin {pin}: {e}")
 
-    def on_connect(self, client, userdata, flags, rc):
+    def on_connect(self, client, userdata, flags, rc, properties):
         if self.exiting: return
         if rc == 0:
             logger.info("MQTT Connected successfully.")
