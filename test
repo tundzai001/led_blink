@@ -305,30 +305,87 @@ class Backend:
             
         except Exception as e:
             logger.error(f"Lỗi khởi động shifting.py: {e}")
+
+    def _read_shifting_output(self, pipe):
+        for line in iter(pipe.readline, ''):
+            if self.exiting:
+                break
+            try:
+                # Mỗi dòng là một chuỗi JSON chứa kết quả
+                data = json.loads(line)
+                # Sử dụng lại hàm xử lý báo cáo đã có
+                self.handle_gnss_report(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line.strip()}")
+            except Exception as e:
+                logger.error(f"Lỗi khi đọc kết quả từ shifting.py: {e}")
+        pipe.close()
+        logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
+
+    def handle_gnss_report(self, data: dict):
+        try:
+            classification_name = "Không xác định"
+            received_velocities = data.get("velocities", {})
+            sorted_classification = sorted(
+                self.gnss_speed_classification,
+                key=lambda x: float(x.get('mm_giay', 0)),
+                reverse=True
+            )
+            
+            received_mm_per_sec = received_velocities.get('mm_giay')
+            
+            if received_mm_per_sec is not None:
+                for level in sorted_classification:
+                    threshold_mm_per_sec = level.get('mm_giay')
+                    if threshold_mm_per_sec is not None and received_mm_per_sec >= float(threshold_mm_per_sec):
+                        classification_name = level['name']
+                        break # Tìm thấy mức độ phù hợp đầu tiên (nhanh nhất)
+
+            name = data.get("sensorname", "GNSS")
+            # Hiển thị giá trị chính (mm/giây) và đơn vị
+            value_str = f"{data.get('value', 0):.4f} {data.get('unit', '')}" 
+            status = classification_name # **Đây là kết quả phân loại**
+            
+            ts = float(data.get("timestamp", time.time()))
+            dt_object = datetime.fromtimestamp(ts)
+            
+            # Tạo bản ghi để hiển thị trên GUI
+            record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
+            
+            self.sensor_data.append(record)
+            # Không thêm dữ liệu GNSS vào biểu đồ của cảm biến nước
+            # self.plot_data_points.append(...) 
+            
+            self.gui_update_queue.put(record)
+            
+            # Nháy đèn LED để báo hiệu có dữ liệu mới
+            threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
+
+        except Exception as e:
+            logger.error(f"Lỗi xử lý báo cáo GNSS: {e}")
             
     def stop_shifting_process(self):
         """Dừng process shifting.py"""
         if self.shifting_process and self.shifting_process.poll() is None:
             try:
-                self.shifting_process.terminate()
-                self.shifting_process.wait(timeout=5)
-                logger.info("Đã dừng process shifting.py")
+                logger.info("Đang dừng tiến trình shifting.py...")
+                self.shifting_process.terminate() # Gửi tín hiệu SIGTERM
+                self.shifting_process.wait(timeout=5) # Chờ 5 giây
+                logger.info("Đã dừng thành công tiến trình shifting.py.")
             except subprocess.TimeoutExpired:
+                logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
                 self.shifting_process.kill()
-                logger.warning("Buộc dừng process shifting.py")
             except Exception as e:
                 logger.error(f"Lỗi khi dừng shifting.py: {e}")
         self.shifting_process = None
 
     def on_message(self, client, userdata, msg):
         if not self.listening or self.exiting: return
+        if msg.topic in self.gnss_topics:
+            return
         try:
             data = json.loads(msg.payload.decode('utf-8'))
-            if data.get("type") == "gnss_velocity_report":
-                # Nếu là tin nhắn từ shifting.py, gọi hàm xử lý riêng
-                self.handle_gnss_report(data)
-            elif "value" in data:
-                # Nếu là tin nhắn cảm biến mực nước (như cũ), xử lý cảnh báo
+            if "value" in data:
                 value = float(data.get("value"))
                 new_level = self.alert_manager.process_new_value(value)
 
@@ -352,7 +409,6 @@ class Backend:
                     self.client.publish(self.publish_topic, payload_out_str)
             else:
                 logger.info(f"Nhận được tin nhắn không phải dữ liệu từ topic '{msg.topic}', bỏ qua.")
-                return
 
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.error(f"Lỗi xử lý message: {e} | Payload: {msg.payload.decode('utf-8', errors='ignore')}")
@@ -540,15 +596,12 @@ class Backend:
             if self.subscribe_topics:
                 for t in self.subscribe_topics:
                     client.subscribe(t)
-                    logger.info(f"Subscribed: {t}")
-            if self.gnss_topics:
-                for topic in self.gnss_topics:
-                    result_topic = f"gnss_velocity/{topic.replace('/', '_')}"
-                    client.subscribe(result_topic)
-                    logger.info(f"Subscribed GNSS result topic: {result_topic}")
-                
+                    if t in self.gnss_topics:
+                        logger.info(f"Subscribed to RAW GNSS Topic (for forwarding): {t}")
+                    else: 
+                        logger.info(f"Subscribed: {t}")
             if not self.subscribe_topics:
-                logger.warning("Chế độ tự động nhưng không có topic nào để subscribe.")
+                logger.warning("Không có topic nào để subscribe, sẽ không nhận dữ liệu.")
                 self.status_text = "Trạng thái: TỰ ĐỘNG (Không có topic)"
         else:
             logger.error(f"Failed to connect to MQTT, return code {rc}")
