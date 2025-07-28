@@ -577,8 +577,6 @@ class AppGUI:
         ttk.Button(control_frame, text="Xóa", command=self.delete_gnss_classification).pack(side="left", padx=5)
         ttk.Button(control_frame, text="Khôi phục mặc định", command=self.reset_gnss_classification).pack(side="left", padx=5)
 
-        ttk.Label(gnss_frame, text="Các cài đặt cho GNSS sẽ được bổ sung tại đây.").pack(pady=20)
-
         # Tab 2: Mực nước
         water_level_frame = ttk.Frame(notebook, padding="10")
         notebook.add(water_level_frame, text='Mực nước')
@@ -619,7 +617,7 @@ class AppGUI:
         self.warning_threshold_var.set(str(self.backend.warning_threshold))
         self.critical_threshold_var.set(str(self.backend.critical_threshold))
 
-    def apply_and_save_config(self, show_message=True):
+    def apply_and_save_config(self, show_message=True, parent_window=None):
         # Lấy giá trị ngưỡng từ các biến StringVar
         warning_thresh_val = self.warning_threshold_var.get()
         critical_thresh_val = self.critical_threshold_var.get()
@@ -634,6 +632,9 @@ class AppGUI:
             all_topics_list.append(gnss_topic)
         topics_string = "\n".join(all_topics_list)
         # ---- KẾT THÚC SỬA ĐỔI ----
+
+        if parent_window is None:
+            parent_window = self.root
 
         settings = {
             'broker': self.broker_entry.get(),
@@ -651,12 +652,14 @@ class AppGUI:
             float(settings['critical_threshold'])
             self.backend.update_and_reconnect(settings)
             if show_message:
-                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=self.root)
+                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=parent_window)
+            return True
         except ValueError:
-            messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=self.root)
+            messagebox.showerror("Lỗi", "Giá trị ngưỡng không hợp lệ. Vui lòng nhập số.", parent=parent_window)
+            return False
         except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=self.root)
-
+            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=parent_window)
+            return False
 
     def periodic_update(self):
         if not self.root.winfo_exists(): return
@@ -701,7 +704,7 @@ class AppGUI:
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
             print("Tự động lưu cấu hình hiện tại trước khi thoát...")
-            self.apply_and_save_config(show_message=False) # Lưu lại các thay đổi cuối cùng
+            self.apply_and_save_config(show_message=False, parent_window=self.root) # Lưu lại các thay đổi cuối cùng
             self.on_close_callback(shutdown=True)
 
     def create_widgets(self):
@@ -989,6 +992,7 @@ class AppGUI:
         }
         self.backend.gnss_speed_classification.append(new_item)
         self.load_gnss_classification_data()
+        self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
 
     def delete_gnss_classification(self):
         selected = self.gnss_tree.selection()
@@ -1001,6 +1005,7 @@ class AppGUI:
             index = int(self.gnss_tree.item(item)["tags"][0])
             del self.backend.gnss_speed_classification[index]
             self.load_gnss_classification_data()
+            self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
 
     def reset_gnss_classification(self):
         if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn khôi phục bảng về giá trị mặc định?", parent=self.settings_window):
@@ -1013,6 +1018,7 @@ class AppGUI:
                 {"name": "Rất chậm", "m_nam": 0.017, "m_thang": 0.0014, "m_ngay": 4.75e-05, "m_gio": 1.98e-06, "m_phut": 3.3e-08, "m_giay": 5.5e-10, "mm_giay": 5.5e-07}
             ]
             self.load_gnss_classification_data()
+            self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
 
     def open_classification_editor(self, index):
         editor_window = Toplevel(self.settings_window)
@@ -1062,6 +1068,7 @@ class AppGUI:
                         classification[key] = float(value) if value else ""
             
                 self.load_gnss_classification_data()
+                self.backend.save_config() # Lưu thay đổi vào file config ngay lập tức
                 messagebox.showinfo("Thành công", "Đã lưu thay đổi.", parent=editor_window)
                 editor_window.destroy()
             except ValueError as e:
@@ -1071,9 +1078,11 @@ class AppGUI:
         ttk.Button(button_frame, text="Hủy", command=editor_window.destroy).pack(side="left", padx=5)
 
     def save_and_close_settings(self):
-        self.backend.save_config()
-        messagebox.showinfo("Thành công", "Đã lưu tất cả cài đặt.", parent=self.settings_window)
-        self.settings_window.destroy()
+        # Gọi hàm lưu chính, hàm này sẽ lấy dữ liệu từ tất cả các ô input và lưu
+        success = self.apply_and_save_config(show_message=False, parent_window=self.settings_window)
+        if success:
+            messagebox.showinfo("Thành công", "Đã lưu tất cả cài đặt.", parent=self.settings_window)
+            self.settings_window.destroy()
 # ==============================================================================
 # KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
 # ==============================================================================
