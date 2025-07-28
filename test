@@ -273,50 +273,63 @@ class Backend:
 
     def start_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None:
-            logger.info("Process shifting.py đã đang chạy.")
+            logger.info("Tiến trình shifting.py đã đang chạy.")
             return
         if not self.gnss_topics:
-            logger.warning("Không có GNSS topics để khởi động shifting.py")
+            logger.warning("Không có topic GNSS nào để khởi động shifting.py.")
             return
-            
         try:
-            gnss_settings = {
-                'broker': self.broker,
-                'port': self.port,
-                'username': self.username, 
-                'password': self.password,
-                'gnss_topics': self.gnss_topics,
-                'time_intervals': getattr(self, 'gnss_time_settings', {
-                    'calculate_per_second': True,
-                    'calculate_per_minute': False,
-                    'calculate_per_hour': False,
-                    'calculate_per_day': False,
-                    'calculate_per_month': False
-                })
-            }
-            with open('gnss_settings.json', 'w') as f:
-                json.dump(gnss_settings, f)
+            command = [
+                sys.executable, '-u', 'shifting.py', # Thêm cờ '-u' để vô hiệu hóa buffering
+                '--broker', self.broker,
+                '--port', str(self.port),
+                '--username', self.username,
+                '--password', self.password
+            ]
+            for topic in self.gnss_topics:
+                command.extend(['--topic', topic])
+        
+            logger.info(f"Đang khởi chạy shifting.py với lệnh: {' '.join(command)}")
+            self.shifting_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            # Không dùng text=True, đọc trực tiếp dưới dạng bytes để kiểm soát tốt hơn
+            )
+        
+        # Bắt đầu luồng đọc kết quả từ stdout
+            threading.Thread(
+                target=self._read_shifting_output,
+                args=(self.shifting_process.stdout,),
+                daemon=True,
+                name="ShiftingOutputReader" # Đặt tên cho luồng để dễ debug
+            ).start()
+        
+            logger.info("Đã khởi động tiến trình shifting.py và luồng đọc kết quả.")
 
-            self.shifting_process = subprocess.Popen([
-                sys.executable, 'shifting.py'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            logger.info("Đã khởi động process shifting.py")
-            
         except Exception as e:
             logger.error(f"Lỗi khởi động shifting.py: {e}")
+        # Đảm bảo dọn dẹp nếu có lỗi
+            if self.shifting_process:
+                self.shifting_process.kill()
+                self.shifting_process = None
 
     def _read_shifting_output(self, pipe):
-        for line in iter(pipe.readline, ''):
+        for line_bytes in iter(pipe.readline, b''):
             if self.exiting:
                 break
             try:
-                # Mỗi dòng là một chuỗi JSON chứa kết quả
-                data = json.loads(line)
-                # Sử dụng lại hàm xử lý báo cáo đã có
-                self.handle_gnss_report(data)
+            # Decode dòng bytes sang chuỗi string utf-8
+                line_str = line_bytes.decode('utf-8').strip()
+                if not line_str:  # Bỏ qua dòng trống
+                    continue
+                data = json.loads(line_str)
+                self.gui_update_queue.put(data)
+
             except json.JSONDecodeError:
-                logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line.strip()}")
+                logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
+            except UnicodeDecodeError:
+                logger.error(f"Lỗi giải mã (Unicode) dòng từ shifting.py. Dữ liệu thô: {line_bytes}")
             except Exception as e:
                 logger.error(f"Lỗi khi đọc kết quả từ shifting.py: {e}")
         pipe.close()
@@ -327,19 +340,22 @@ class Backend:
             classification_name = "Không xác định"
             received_velocities = data.get("velocities", {})
             sorted_classification = sorted(
-                self.gnss_speed_classification,
-                key=lambda x: float(x.get('mm_giay', 0)),
+                [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and item.get('mm_giay') != ''],
+                key=lambda x: float(x.get('mm_giay')),
                 reverse=True
             )
             
             received_mm_per_sec = received_velocities.get('mm_giay')
             
             if received_mm_per_sec is not None:
-                for level in sorted_classification:
-                    threshold_mm_per_sec = level.get('mm_giay')
-                    if threshold_mm_per_sec is not None and received_mm_per_sec >= float(threshold_mm_per_sec):
-                        classification_name = level['name']
-                        break # Tìm thấy mức độ phù hợp đầu tiên (nhanh nhất)
+                if sorted_classification:
+                    for level in sorted_classification:
+                        threshold_mm_per_sec = level.get('mm_giay')
+                        if threshold_mm_per_sec is not None and received_mm_per_sec >= float(threshold_mm_per_sec):
+                            classification_name = level['name']
+                            break # Tìm thấy mức độ phù hợp đầu tiên (nhanh nhất)
+                    else: 
+                        classification_name = "Rất chậm"
 
             name = data.get("sensorname", "GNSS")
             # Hiển thị giá trị chính (mm/giây) và đơn vị
@@ -351,27 +367,27 @@ class Backend:
             
             # Tạo bản ghi để hiển thị trên GUI
             record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
-            
             self.sensor_data.append(record)
-            # Không thêm dữ liệu GNSS vào biểu đồ của cảm biến nước
-            # self.plot_data_points.append(...) 
-            
-            self.gui_update_queue.put(record)
-            
-            # Nháy đèn LED để báo hiệu có dữ liệu mới
             threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
+            return record
 
         except Exception as e:
             logger.error(f"Lỗi xử lý báo cáo GNSS: {e}")
-            
+            return None
+    
     def stop_shifting_process(self):
-        """Dừng process shifting.py"""
         if self.shifting_process and self.shifting_process.poll() is None:
             try:
                 logger.info("Đang dừng tiến trình shifting.py...")
-                self.shifting_process.terminate() # Gửi tín hiệu SIGTERM
-                self.shifting_process.wait(timeout=5) # Chờ 5 giây
-                logger.info("Đã dừng thành công tiến trình shifting.py.")
+                self.shifting_process.terminate()
+            # Chờ stdout và stderr kết thúc
+                stdout, stderr = self.shifting_process.communicate(timeout=5)
+                if stdout:
+                    logger.info(f"Output cuối cùng từ shifting.py: {stdout}")
+                if stderr:
+                    logger.warning(f"Error cuối cùng từ shifting.py: {stderr}")
+
+                logger.info(f"Đã dừng thành công tiến trình shifting.py với mã thoát: {self.shifting_process.returncode}")
             except subprocess.TimeoutExpired:
                 logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
                 self.shifting_process.kill()
@@ -803,30 +819,45 @@ class AppGUI:
     def periodic_update(self):
         if not self.root.winfo_exists(): return
         self.update_status_label()
+    
         new_updates = self.backend.get_gui_updates()
-        if new_updates:
-            if Constants.DATA_CLEAR_SIGNAL in new_updates:
+    
+        for item in new_updates:
+            if item == Constants.DATA_CLEAR_SIGNAL:
                 self.sheet.set_sheet_data(data=[])
                 if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.clear_chart_data()
                 logger.info("GUI đã nhận tín hiệu và xóa bảng.")
+                continue # Xử lý xong, sang item tiếp theo
+
+            # Kiểm tra xem item là tin nhắn từ cảm biến nước (tuple) hay GNSS (dict)
+            if isinstance(item, dict) and item.get("type") == "gnss_velocity_report":
+                 # Đây là tin nhắn từ shifting.py, gọi hàm xử lý
+                record = self.backend.handle_gnss_report(item) # Hàm này sẽ trả về record để hiển thị
+            elif isinstance(item, tuple):
+                 # Đây là tin nhắn cảm biến nước đã được xử lý trước đó
+                record = item
             else:
-                valid_records = [rec for rec in new_updates if isinstance(rec, tuple)]
-                if valid_records:
-                    self.sheet.insert_rows(rows=len(self.sheet.get_sheet_data()), data=valid_records, add_new_rows=True)
-                    self.sheet.dehighlight_all()
-                    last_row_index = self.sheet.get_total_rows() - 1
-                    if last_row_index >= 0:
-                        self.sheet.see(row=last_row_index)
-                        last_record = valid_records[-1]
-                        status = last_record[2]
-                        if status == "NGUY HIEM":
-                            highlight_color = "#F8D7DA"
-                        elif status == "CANH BAO":
-                            highlight_color = "#FFF3CD"
-                        else:
-                            highlight_color = "#D4EDDA"
-                        self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
-            if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.update_plot()
+                 continue # Bỏ qua các item không xác định
+
+            if record:
+                self.sheet.insert_rows(rows=len(self.sheet.get_sheet_data()), data=[record], add_new_rows=True)
+                self.sheet.dehighlight_all()
+                last_row_index = self.sheet.get_total_rows() - 1
+            
+                if last_row_index >= 0:
+                    self.sheet.see(row=last_row_index)
+                    status = record[2]
+                
+                    if status == "NGUY HIEM": highlight_color = "#F8D7DA"
+                    elif status == "CANH BAO": highlight_color = "#FFF3CD"
+                    elif status == "AN TOAN": highlight_color = "#D4EDDA"
+                    else: highlight_color = "#E9ECEF"
+                    
+                    self.sheet.highlight_rows(rows=[last_row_index], bg=highlight_color, fg="black")
+
+        if self.chart_window and self.chart_window.winfo_exists(): 
+            self.chart_window.update_plot()
+        
         self.root.after(250, self.periodic_update)
 
     def on_close_window(self):
