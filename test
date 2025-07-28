@@ -273,7 +273,21 @@ class Backend:
                 self.port = mqtt_cfg.getint("port", self.port)
                 self.username = mqtt_cfg.get("username", self.username)
                 self.password = mqtt_cfg.get("password", self.password)
-                self.subscribe_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
+                
+                # ---- SỬA ĐỔI: Tải cấu hình cho 2 sub topic riêng biệt ----
+                # Ưu tiên tải từ các key mới
+                water_topic = mqtt_cfg.get("water_sub_topic", None)
+                gnss_topic = mqtt_cfg.get("gnss_sub_topic", None)
+
+                self.subscribe_topics = []
+                if water_topic is not None: # Nếu key mới 'water_sub_topic' tồn tại
+                    if water_topic: self.subscribe_topics.append(water_topic)
+                    if gnss_topic: self.subscribe_topics.append(gnss_topic)
+                else: # Xử lý cho file config cũ (tương thích ngược)
+                    old_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
+                    self.subscribe_topics = old_topics
+                # ---- KẾT THÚC SỬA ĐỔI ----
+
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
             if "Settings" in self.config:
                 settings_cfg = self.config["Settings"]
@@ -312,11 +326,18 @@ class Backend:
             print(f"Lỗi khi tải cấu hình từ {CONFIG_FILE}: {e}")
 
     def save_config(self):
+        # ---- SỬA ĐỔI: Lưu cấu hình cho 2 sub topic riêng biệt ----
+        water_topic = self.subscribe_topics[0] if len(self.subscribe_topics) > 0 else ""
+        gnss_topic = self.subscribe_topics[1] if len(self.subscribe_topics) > 1 else ""
+        
         self.config['MQTT'] = {
             'broker': self.broker, 'port': self.port, 'username': self.username,
-            'password': self.password, 'topics': "\n".join(self.subscribe_topics),
+            'password': self.password,
+            'water_sub_topic': water_topic,
+            'gnss_sub_topic': gnss_topic,
             'publish': self.publish_topic
         }
+        # ---- KẾT THÚC SỬA ĐỔI ----
         self.config['Settings'] = {
             'warning_threshold': self.warning_threshold,
             'critical_threshold': self.critical_threshold
