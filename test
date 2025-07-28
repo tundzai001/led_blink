@@ -527,17 +527,19 @@ class AppGUI:
 
         # ---- SỬA ĐỔI: Chia ô Sub topic thành hai ô Water và GNSS ----
         ttk.Label(left, text="Water Sub Topic:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.water_topic_entry = ttk.Entry(left)
-        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="ew")
+        self.water_topic_entry = tk.Text(left, height=2, width=35, relief="solid", borderwidth=1)
+        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
 
         ttk.Label(left, text="GNSS Sub Topic:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.gnss_topic_entry = ttk.Entry(left)
-        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="ew")
+        self.gnss_topic_entry = tk.Text(left, height=2, width=35, relief="solid", borderwidth=1)
+        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
         # ---- KẾT THÚC SỬA ĐỔI ----
 
         # Điều chỉnh vị trí các nút bên dưới
         ttk.Button(left, text="Cài đặt", command=self.open_settings_window, bootstyle="secondary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 5))
         ttk.Button(left, text="Lưu & Áp dụng", command=self.apply_and_save_config, bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5,0))
+        left.grid_rowconfigure(6, weight=1)
+        left.grid_rowconfigure(8, weight=1)
 
 
     def open_settings_window(self):
@@ -604,11 +606,13 @@ class AppGUI:
         self.pub_entry.insert(0, self.backend.publish_topic)
         
         # ---- SỬA ĐỔI: Tải dữ liệu vào hai ô topic ----
+        self.water_topic_entry.delete("1.0", tk.END)
+        self.gnss_topic_entry.delete("1.0", tk.END)
         topics = self.backend.subscribe_topics
         if len(topics) > 0:
-            self.water_topic_entry.insert(0, topics[0])
+            self.water_topic_entry.insert("1.0", topics[0])
         if len(topics) > 1:
-            self.gnss_topic_entry.insert(0, topics[1])
+            self.gnss_topic_entry.insert("1.0", topics[1])
         # ---- KẾT THÚC SỬA ĐỔI ----
 
         # Load dữ liệu ngưỡng vào các biến StringVar
@@ -621,8 +625,8 @@ class AppGUI:
         critical_thresh_val = self.critical_threshold_var.get()
 
         # ---- SỬA ĐỔI: Lấy dữ liệu từ hai ô topic ----
-        water_topic = self.water_topic_entry.get().strip()
-        gnss_topic = self.gnss_topic_entry.get().strip()
+        water_topic = self.water_topic_entry.get("1.0", "end-1c").strip()
+        gnss_topic = self.gnss_topic_entry.get("1.0", "end-1c").strip()
         all_topics_list = []
         if water_topic:
             all_topics_list.append(water_topic)
