@@ -31,29 +31,33 @@ import RPi.GPIO as GPIO
 import pygame
 
 # ==============================================================================
-# ĐỀ XUẤT 7: LOGGING THAY VÌ PRINT (PHIÊN BẢN ĐIỀU CHỈNH)
+# ĐỀ XUẤT 7: LOGGING THAY VÌ PRINT (PHIÊN BẢN TÙY CHỈNH ĐỊNH DẠNG)
 # ==============================================================================
-# Cấu hình logger để terminal chỉ hiển thị WARNING trở lên, file log ghi lại mọi thứ
+# Cấu hình logger: file ghi log đầy đủ, terminal chỉ hiển thị thông điệp gốc.
 
 # --- BƯỚC 1: Lấy logger gốc và đặt mức thấp nhất là INFO ---
 # Điều này cho phép logger xử lý tất cả các thông điệp từ INFO trở lên
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.INFO) 
 
-# --- BƯỚC 2: Tạo formatter (định dạng chung cho các log) ---
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# --- BƯỚC 2: Tạo HAI formatter khác nhau ---
+# Formatter cho FILE: Ghi đầy đủ thông tin (thời gian, cấp độ, thông điệp)
+file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# Formatter cho CONSOLE/TERMINAL: Chỉ hiển thị thông điệp, không có tiền tố
+console_formatter = logging.Formatter('%(message)s')
 
-# --- BƯỚC 3: Cấu hình handler cho FILE - Ghi lại mọi thứ (từ INFO) ---
+# --- BƯỚC 3: Cấu hình handler cho FILE ---
 file_handler = logging.FileHandler('sensor_monitor.log', encoding='utf-8')
-file_handler.setLevel(logging.INFO)  # Đặt mức ghi cho file là INFO
-file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO) # Ghi tất cả các mức vào file
+file_handler.setFormatter(file_formatter) # Dùng formatter đầy đủ
 logger.addHandler(file_handler)
 
-# --- BƯỚC 4: Cấu hình handler cho CONSOLE/TERMINAL - Chỉ hiển thị cảnh báo và lỗi ---
+# --- BƯỚC 4: Cấu hình handler cho CONSOLE/TERMINAL ---
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.WARNING) # << ĐÂY LÀ THAY ĐỔI QUAN TRỌNG
-console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO) # Vẫn hiển thị các tin INFO
+console_handler.setFormatter(console_formatter) # << DÙNG FORMATTER TỐI GIẢN
 logger.addHandler(console_handler)
+
 # ==============================================================================
 # ĐỀ XUẤT 8: QUẢN LÝ HẰNG SỐ
 # ==============================================================================
