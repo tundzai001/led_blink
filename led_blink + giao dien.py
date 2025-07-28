@@ -45,6 +45,8 @@ class Backend:
         self.broker, self.port, self.username, self.password = "aitogy.xyz", 1883, "abc", "xyz"
         self.publish_topic = ""
         self.subscribe_topics = []
+        self.water_topics = []  
+        self.gnss_topics = []   
         self.warning_threshold = 1.0
         self.critical_threshold = 1.2
         self.led1_pin, self.led2_pin = LED1_PIN, LED2_PIN
@@ -252,7 +254,7 @@ class Backend:
         self.broker, self.port = settings['broker'], int(settings['port'])
         self.username, self.password = settings['username'], settings['password']
         self.publish_topic = settings['publish']
-        self.subscribe_topics = [t for t in settings['topics'].splitlines() if t]
+        self.update_topics_from_gui(settings['water_topics'], settings['gnss_topics'])
         self.warning_threshold = float(settings['warning_threshold'])
         self.critical_threshold = float(settings['critical_threshold'])
         self.save_config()
@@ -260,6 +262,16 @@ class Backend:
             self.toggle_off()
             time.sleep(1)
             self.toggle_on()
+
+    def update_topics_from_gui(self, water_topics_text, gnss_topics_text):
+    # Xử lý water topics
+        self.water_topics = [t.strip() for t in water_topics_text.splitlines() if t.strip()]
+    
+    # Xử lý gnss topics  
+        self.gnss_topics = [t.strip() for t in gnss_topics_text.splitlines() if t.strip()]
+    
+    # Gộp tất cả topics
+        self.subscribe_topics = self.water_topics + self.gnss_topics
 
     def load_config(self):
         if not os.path.exists(CONFIG_FILE):
@@ -276,16 +288,19 @@ class Backend:
                 
                 # ---- SỬA ĐỔI: Tải cấu hình cho 2 sub topic riêng biệt ----
                 # Ưu tiên tải từ các key mới
-                water_topic = mqtt_cfg.get("water_sub_topic", None)
-                gnss_topic = mqtt_cfg.get("gnss_sub_topic", None)
+                water_topics_str = mqtt_cfg.get("water_sub_topic", "")
+                water_topics = [t.strip() for t in water_topics_str.splitlines() if t.strip()]
+            
+                gnss_topics_str = mqtt_cfg.get("gnss_sub_topic", "")
+                gnss_topics = [t.strip() for t in gnss_topics_str.splitlines() if t.strip()]
 
-                self.subscribe_topics = []
-                if water_topic is not None: # Nếu key mới 'water_sub_topic' tồn tại
-                    if water_topic: self.subscribe_topics.append(water_topic)
-                    if gnss_topic: self.subscribe_topics.append(gnss_topic)
-                else: # Xử lý cho file config cũ (tương thích ngược)
-                    old_topics = [t for t in mqtt_cfg.get("topics", "").splitlines() if t]
-                    self.subscribe_topics = old_topics
+                # Gộp tất cả topics lại
+                self.subscribe_topics = water_topics + gnss_topics
+            
+                # Lưu riêng để phân biệt trong GUI
+                self.water_topics = water_topics
+                self.gnss_topics = gnss_topics
+           
                 # ---- KẾT THÚC SỬA ĐỔI ----
 
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
@@ -327,14 +342,14 @@ class Backend:
 
     def save_config(self):
         # ---- SỬA ĐỔI: Lưu cấu hình cho 2 sub topic riêng biệt ----
-        water_topic = self.subscribe_topics[0] if len(self.subscribe_topics) > 0 else ""
-        gnss_topic = self.subscribe_topics[1] if len(self.subscribe_topics) > 1 else ""
+        water_topics_str = "\n".join(getattr(self, 'water_topics', []))
+        gnss_topics_str = "\n".join(getattr(self, 'gnss_topics', []))
         
         self.config['MQTT'] = {
             'broker': self.broker, 'port': self.port, 'username': self.username,
             'password': self.password,
-            'water_sub_topic': water_topic,
-            'gnss_sub_topic': gnss_topic,
+            'water_sub_topic': water_topics_str,
+            'gnss_sub_topic': gnss_topics_str,
             'publish': self.publish_topic
         }
         # ---- KẾT THÚC SỬA ĐỔI ----
@@ -624,14 +639,19 @@ class AppGUI:
         self.pass_entry.insert(0, self.backend.password)
         self.pub_entry.insert(0, self.backend.publish_topic)
         
-        # ---- SỬA ĐỔI: Tải dữ liệu vào hai ô topic ----
+        # ---- SỬA ĐỔI: Tải dữ liệu vào hai ô topic từ các danh sách riêng ----
         self.water_topic_entry.delete("1.0", tk.END)
         self.gnss_topic_entry.delete("1.0", tk.END)
-        topics = self.backend.subscribe_topics
-        if len(topics) > 0:
-            self.water_topic_entry.insert("1.0", topics[0])
-        if len(topics) > 1:
-            self.gnss_topic_entry.insert("1.0", topics[1])
+    
+        # Tải water topics
+        if hasattr(self.backend, 'water_topics') and self.backend.water_topics:
+            water_topics_text = "\n".join(self.backend.water_topics)
+            self.water_topic_entry.insert("1.0", water_topics_text)
+    
+        # Tải gnss topics
+        if hasattr(self.backend, 'gnss_topics') and self.backend.gnss_topics:
+            gnss_topics_text = "\n".join(self.backend.gnss_topics)
+            self.gnss_topic_entry.insert("1.0", gnss_topics_text)
         # ---- KẾT THÚC SỬA ĐỔI ----
 
         # Load dữ liệu ngưỡng vào các biến StringVar
@@ -644,15 +664,8 @@ class AppGUI:
         critical_thresh_val = self.critical_threshold_var.get()
 
         # ---- SỬA ĐỔI: Lấy dữ liệu từ hai ô topic ----
-        water_topic = self.water_topic_entry.get("1.0", "end-1c").strip()
-        gnss_topic = self.gnss_topic_entry.get("1.0", "end-1c").strip()
-        all_topics_list = []
-        if water_topic:
-            all_topics_list.append(water_topic)
-        if gnss_topic:
-            all_topics_list.append(gnss_topic)
-        topics_string = "\n".join(all_topics_list)
-        # ---- KẾT THÚC SỬA ĐỔI ----
+        water_topics_text = self.water_topic_entry.get("1.0", "end-1c").strip()
+        gnss_topics_text = self.gnss_topic_entry.get("1.0", "end-1c").strip()
 
         if parent_window is None:
             parent_window = self.root
@@ -662,7 +675,8 @@ class AppGUI:
             'port': self.port_entry.get(),
             'username': self.user_entry.get(),
             'password': self.pass_entry.get(),
-            'topics': topics_string,
+            'water_topics': water_topics_text,
+            'gnss_topics': gnss_topics_text,
             'publish': self.pub_entry.get(),
             'warning_threshold': warning_thresh_val,
             'critical_threshold': critical_thresh_val
