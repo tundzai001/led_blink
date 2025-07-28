@@ -315,23 +315,39 @@ class Backend:
                 self.shifting_process = None
 
     def _read_shifting_output(self, pipe):
-        for line_bytes in iter(pipe.readline, b''):
-            if self.exiting:
-                break
+        buffer = b''
+        while not self.exiting:
             try:
-            # Decode dòng bytes sang chuỗi string utf-8
-                line_str = line_bytes.decode('utf-8').strip()
-                if not line_str:  # Bỏ qua dòng trống
-                    continue
-                data = json.loads(line_str)
-                self.gui_update_queue.put(data)
+            # Đọc 1 byte từ đường ống
+                out = pipe.read(1)
+            
+            # Nếu không đọc được gì, tiến trình con đã kết thúc
+                if out == b'':
+                    break
+                
+            # Nếu byte đọc được là ký tự xuống dòng
+                if out == b'\n':
+                    line_str = buffer.decode('utf-8').strip()
+                    buffer = b'' # Reset buffer
 
-            except json.JSONDecodeError:
-                logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
-            except UnicodeDecodeError:
-                logger.error(f"Lỗi giải mã (Unicode) dòng từ shifting.py. Dữ liệu thô: {line_bytes}")
+                    if not line_str:
+                        continue
+                
+                    try:
+                        data = json.loads(line_str)
+                        self.gui_update_queue.put(data)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
+
+            # Nếu không phải ký tự xuống dòng, tiếp tục ghép vào buffer
+                else:
+                    buffer += out
+
             except Exception as e:
-                logger.error(f"Lỗi khi đọc kết quả từ shifting.py: {e}")
+            # Bắt các lỗi có thể xảy ra khi tiến trình con bị dừng đột ngột
+                logger.error(f"Lỗi trong luồng đọc shifting.py: {e}")
+                break
+            
         pipe.close()
         logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
 
@@ -886,7 +902,7 @@ class AppGUI:
         self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         sheet_frame = ttk.Frame(right)
         sheet_frame.grid(row=1, column=0, sticky="nsew")
-        self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"], show_row_index=True)
+        self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị ", "Trạng thái", "Thời gian"], show_row_index=True)
         self.sheet.pack(fill=tk.BOTH, expand=True)
         self.sheet.disable_bindings("all")
         self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
@@ -1002,7 +1018,7 @@ class AppGUI:
             import csv
             with open(path, "w", newline="", encoding='utf-8-sig') as f:
                 writer = csv.writer(f)
-                writer.writerow(["Tên", "Giá trị (m)", "Trạng thái", "Thời gian"])
+                writer.writerow(["Tên", "Giá trị ", "Trạng thái", "Thời gian"])
                 writer.writerows(data_to_save)
             if self.root.winfo_exists():
                 self.root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {os.path.basename(path)}", parent=self.root))
