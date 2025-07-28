@@ -345,6 +345,7 @@ class Backend:
                 
                     try:
                         data = json.loads(line_str)
+                        logger.info(f"ĐÃ NHẬN & GIẢI MÃ TỪ SHIFTING: {line_str}")
                         self.gui_update_queue.put(data)
                     except json.JSONDecodeError:
                         logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
