@@ -581,7 +581,12 @@ class Backend:
         self.broker, self.port = settings['broker'], int(settings['port'])
         self.username, self.password = settings['username'], settings['password']
         self.publish_topic = settings['publish']
-        self.update_topics_from_gui(settings['water_topics'], settings['gnss_topics'])
+        water_topics_str = settings.get('water_topics', '')
+        gnss_topics_str = settings.get('gnss_topics', '')
+    
+        self.water_topics = [t.strip() for t in water_topics_str.splitlines() if t.strip()]
+        self.gnss_topics = [t.strip() for t in gnss_topics_str.splitlines() if t.strip()]
+        self.subscribe_topics = self.water_topics + self.gnss_topics
         self.warning_threshold = float(settings['warning_threshold'])
         self.critical_threshold = float(settings['critical_threshold'])
         self.save_config()
