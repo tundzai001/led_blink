@@ -1,3 +1,5 @@
+# led.py (Ultimate Version - Combined Logic & Full Original GUI)
+
 import tkinter as tk
 from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
@@ -22,6 +24,8 @@ import numpy as np
 import logging
 import atexit
 import subprocess
+import math
+
 # Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
@@ -30,59 +34,49 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 import RPi.GPIO as GPIO
 import pygame
 
+# --- Cấu hình logging ---
 logger = logging.getLogger()
-logger.setLevel(logging.INFO) 
+logger.setLevel(logging.INFO)
 file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console_formatter = logging.Formatter('%(message)s')
+console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
 file_handler = logging.FileHandler('sensor_monitor.log', encoding='utf-8')
-file_handler.setLevel(logging.INFO) 
+file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(file_formatter)
 logger.addHandler(file_handler)
 
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO) 
-console_handler.setFormatter(console_formatter) 
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
 # ==============================================================================
 # QUẢN LÝ HẰNG SỐ
 # ==============================================================================
 class Constants:
-    # File paths
     CONFIG_FILE = 'config.ini'
     SESSION_FILE = "session.json"
-    SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds" 
-
-    # GPIO pins
+    SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
     LED1_PIN = 3
     LED2_PIN = 27
-
-    # Data & UI limits
     MAX_PLOT_POINTS = 10000
     MAX_SENSOR_RECORDS = 10000
     CHART_POINTS_PER_VIEW = 40
-
-    # MQTT defaults
     DEFAULT_BROKER = "aitogy.xyz"
     DEFAULT_PORT = 1883
     DEFAULT_USER = "abc"
     DEFAULT_PASS = "xyz"
-
-    # Alert thresholds & logic
     DEFAULT_WARN_THRESHOLD = 1.0
     DEFAULT_CRIT_THRESHOLD = 1.2
+    DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA"
+    WARNING_REPEAT_INTERVAL = 6
+    DECREASING_REPEAT_INTERVAL = 10
     SAFE_READINGS_REQUIRED_INITIAL = 10
     SAFE_READINGS_REQUIRED_RETURN_1 = 10
     SAFE_READINGS_REQUIRED_RETURN_2 = 15
-    WARNING_REPEAT_INTERVAL = 6
-    DECREASING_REPEAT_INTERVAL = 10
-
-    # GUI Signals
-    DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA"
 
 # ==============================================================================
-# CẢNH BÁO 
+# QUẢN LÝ CẢNH BÁO (LOGIC GỐC ĐƯỢC KHÔI PHỤC)
 # ==============================================================================
 class AlertManager:
     def __init__(self, backend_ref):
@@ -96,28 +90,19 @@ class AlertManager:
         self.safe_return_phase = 0
         self.alert_thread = None
 
-    def _play_sequence_in_thread(self, sound_list):
+    def _play_sequence_in_thread(self, sound_list, loop=False):
         self.stop_all_alerts()
-        if self.alert_thread and self.alert_thread.is_alive():
-            pass
+        if self.alert_thread and self.alert_thread.is_alive(): return
 
         def target():
             if not self.backend.mixer_initialized: return
-            for sound in sound_list:
-                if sound:
-                    if threading.current_thread() != self.alert_thread:
-                        return
-                    logger.info(f" -> Đang phát âm thanh...")
-                    sound.play()
-                    while pygame.mixer.get_busy():
-                        if threading.current_thread() != self.alert_thread:
-                            pygame.mixer.stop()
-                            return
-                        time.sleep(0.1)
-                else:
-                    logger.warning("Bỏ qua file âm thanh không tồn tại trong chuỗi.")
-                time.sleep(0.2)
-        
+            while not self.backend.exiting:
+                for sound in sound_list:
+                    if sound and not self.backend.exiting:
+                        sound.play()
+                        while pygame.mixer.get_busy() and not self.backend.exiting:
+                            time.sleep(0.1)
+                if not loop: break
         self.alert_thread = threading.Thread(target=target, daemon=True)
         self.alert_thread.start()
 
@@ -126,95 +111,76 @@ class AlertManager:
             pygame.mixer.stop()
         self.alert_thread = None
 
-    def process_new_value(self, value):
+    def trigger_critical_event_alarm(self):
+        if self.current_level != 3:
+            logger.critical("!!! SỰ KIỆN KHẨN CẤP GNSS ĐƯỢC KÍCH HOẠT !!!")
+            self.current_level = 3
+            self.was_in_high_level_state = True
+            self._play_sequence_in_thread([self.backend.siren_sound, self.backend.critical_sound], loop=True)
+
+    def process_new_water_value(self, value):
+        if self.current_level == 3: return 2
+    
         previous_level = self.current_level
         new_level = self._calculate_alert_level(value)
 
-        if new_level == 0:
-            self._handle_safe_state()
-        elif new_level == 1:
-            self._handle_warning_state(previous_level)
-        elif new_level == 2:
-            self._handle_critical_state()
+        if new_level == 0: self._handle_safe_state()
+        elif new_level == 1: self._handle_warning_state(previous_level)
+        elif new_level == 2: self._handle_critical_state()
 
         if new_level != previous_level:
-            if new_level == 0 and previous_level > 0:
-                self.safe_readings_count = 1
-            logger.info(f"Chuyển trạng thái từ {previous_level} -> {new_level}")
+            if new_level == 0 and previous_level > 0: self.safe_readings_count = 1
+            logger.info(f"Cảnh báo nước: Chuyển trạng thái {previous_level} -> {new_level}")
 
         self.current_level = new_level
         return new_level
 
     def _calculate_alert_level(self, value):
-        if value >= self.backend.critical_threshold:
-            return 2
-        elif value >= self.backend.warning_threshold:
-            return 1
+        if value >= self.backend.critical_threshold: return 2
+        elif value >= self.backend.warning_threshold: return 1
         return 0
 
     def _handle_safe_state(self):
         self.warning_readings_count = 0
         self.decreasing_warning_count = 0
         self.safe_readings_count += 1
-
         if not self.was_in_high_level_state:
             if not self.initial_safe_played and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_INITIAL:
-                logger.info(f"An toàn ban đầu: Đủ {Constants.SAFE_READINGS_REQUIRED_INITIAL} lần, phát 'safe.mp3'.")
                 self._play_sequence_in_thread([self.backend.safe_sound_1])
                 self.initial_safe_played = True
         else:
-            if self.safe_return_phase == 0:
-                 self.safe_return_phase = 1
-            
+            if self.safe_return_phase == 0: self.safe_return_phase = 1
             if self.safe_return_phase == 1 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_1:
-                logger.info(f"Về an toàn: Đủ {Constants.SAFE_READINGS_REQUIRED_RETURN_1} lần, phát 'safe2.mp3'.")
                 self._play_sequence_in_thread([self.backend.safe_sound_2])
                 self.safe_return_phase = 2
             elif self.safe_return_phase == 2 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_2:
-                logger.info(f"Về an toàn: Đủ {Constants.SAFE_READINGS_REQUIRED_RETURN_2} lần, phát 'safe2.mp3' lần cuối.")
                 self._play_sequence_in_thread([self.backend.safe_sound_2])
-                self.safe_return_phase = 3
-                self.was_in_high_level_state = False
-                self.initial_safe_played = True
+                self.safe_return_phase = 3; self.was_in_high_level_state = False; self.initial_safe_played = True
 
     def _handle_warning_state(self, previous_level):
-        self.safe_readings_count = 0
-        self.safe_return_phase = 0
-        if not self.was_in_high_level_state:
-            self.was_in_high_level_state = True
-            
+        self.safe_readings_count = 0; self.safe_return_phase = 0
+        if not self.was_in_high_level_state: self.was_in_high_level_state = True
+        
         if previous_level == 0:
-            logger.info("TĂNG lên Cảnh báo. Phát 'coi1' -> 'warning'.")
             self._play_sequence_in_thread([self.backend.siren_sound, self.backend.warning_sound])
-            self.warning_readings_count = 1
-            self.decreasing_warning_count = 0
+            self.warning_readings_count = 1; self.decreasing_warning_count = 0
         elif previous_level == 2:
-            logger.info("GIẢM từ Nguy hiểm xuống Cảnh báo. Phát 'decrease'.")
             self._play_sequence_in_thread([self.backend.decreasing_sound])
-            self.decreasing_warning_count = 1
-            self.warning_readings_count = 0
+            self.decreasing_warning_count = 1; self.warning_readings_count = 0
         elif previous_level == 1:
             if self.warning_readings_count > 0:
                 self.warning_readings_count += 1
-                logger.info(f"Duy trì Cảnh báo (tăng), lần {self.warning_readings_count}.")
                 if self.warning_readings_count % Constants.WARNING_REPEAT_INTERVAL == 0:
-                     logger.info("Phát lại cảnh báo tăng: 'coi1' -> 'warning'.")
                      self._play_sequence_in_thread([self.backend.siren_sound, self.backend.warning_sound])
             elif self.decreasing_warning_count > 0:
                 self.decreasing_warning_count += 1
-                logger.info(f"Duy trì Cảnh báo (giảm), lần {self.decreasing_warning_count}.")
                 if self.decreasing_warning_count % Constants.DECREASING_REPEAT_INTERVAL == 0:
-                    logger.info("Phát lại cảnh báo giảm: 'decrease'.")
                     self._play_sequence_in_thread([self.backend.decreasing_sound])
 
     def _handle_critical_state(self):
-        self.safe_readings_count = 0
-        self.warning_readings_count = 0
-        self.decreasing_warning_count = 0
-        self.safe_return_phase = 0
-        if not self.was_in_high_level_state:
-            self.was_in_high_level_state = True
-        logger.warning("NGUY HIỂM! Phát chuỗi âm thanh nguy hiểm.")
+        self.safe_readings_count = 0; self.warning_readings_count = 0
+        self.decreasing_warning_count = 0; self.safe_return_phase = 0
+        if not self.was_in_high_level_state: self.was_in_high_level_state = True
         self._play_sequence_in_thread([self.backend.siren_sound, self.backend.critical_sound, self.backend.siren_sound])
 
 # ==============================================================================
@@ -222,55 +188,58 @@ class AlertManager:
 # ==============================================================================
 class Backend:
     def __init__(self):
-        self.listening = False
-        self.exiting = False
-        self.status_text = "Trạng thái: THỦ CÔNG"
-        self.status_color = "red"
-        self.config = configparser.ConfigParser()
+        self.listening = False; self.exiting = False
+        self.status_text = "Trạng thái: THỦ CÔNG"; self.status_color = "red"
         
-        self.broker = Constants.DEFAULT_BROKER
-        self.port = Constants.DEFAULT_PORT
-        self.username = Constants.DEFAULT_USER
-        self.password = Constants.DEFAULT_PASS
-        self.publish_topic = ""
-        self.subscribe_topics = []
-        self.water_topics = []
-        self.gnss_topics = []
+        self.config = configparser.ConfigParser()
+        self.broker = Constants.DEFAULT_BROKER; self.port = Constants.DEFAULT_PORT
+        self.username = Constants.DEFAULT_USER; self.password = Constants.DEFAULT_PASS
+        self.publish_topic = ""; self.water_topics = []; self.gnss_topics = []
         self.warning_threshold = Constants.DEFAULT_WARN_THRESHOLD
         self.critical_threshold = Constants.DEFAULT_CRIT_THRESHOLD
-        
-        self.warning_sound, self.critical_sound, self.siren_sound = None, None, None
-        self.decreasing_sound, self.safe_sound_1, self.safe_sound_2 = None, None, None
+        self.gnss_time_settings = {}
+        self.gnss_speed_classification = []
         self.mixer_initialized = False
+        self.gnss_speed_classification = []
 
-        # ĐỀ XUẤT 4: QUẢN LÝ BỘ NHỚ
+        self.mixer_initialized = False; self.warning_sound = None; self.critical_sound = None; self.siren_sound = None
+        self.decreasing_sound = None; self.safe_sound_1 = None; self.safe_sound_2 = None
+        
         self.sensor_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
         self.plot_data_points = deque(maxlen=Constants.MAX_PLOT_POINTS)
-        
         self.gui_update_queue = queue.Queue()
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
-        self.client.on_connect = self.on_connect
-        self.client.on_disconnect = self.on_disconnect
-        self.client.on_message = self.on_message
-
-        self.shifting_process = None  
-        self.gnss_velocity_queue = queue.Queue()
-        self.gnss_time_settings = {
-            'calculate_per_second': True,
-            'calculate_per_minute': False, 
-            'calculate_per_hour': False,
-            'calculate_per_day': False,
-            'calculate_per_month': False
-        }
         
-        self.alert_manager = AlertManager(self)
+        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
+        self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
 
+        self.shifting_process = None
+        
+        self.latest_gnss_analysis = {}
+        self.gnss_event_confirmed = False
+        
+        self.position_history_for_long_term = deque(maxlen=31 * 24 * 3600)
+        self.long_term_avg_velocities = {}
+        self._long_term_analyzer_thread = None
+
+        self.alert_manager = AlertManager(self)
         self.setup_audio_mixer()
         self.setup_gpio()
         self.load_config()
-
         atexit.register(self.cleanup_on_exit)
 
+    def _reset_gnss_to_default(self):
+        self.gnss_speed_classification = [
+            {"name": "Nguy cấp", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": 18000, "m_phut": 300, "m_giay": 5, "mm_giay": 5000},
+            {"name": "Rất nhanh", "m_nam": "", "m_thang": "", "m_ngay": 4320, "m_gio": 180, "m_phut": 3, "m_giay": 0.05, "mm_giay": 50},
+            {"name": "Nhanh", "m_nam": 1296.0, "m_thang": 43.2, "m_ngay": 1.8, "m_gio": 0.03, "m_phut": 0.0005, "m_giay": 0.5, "mm_giay": 0.5},
+            {"name": "Trung bình", "m_nam": 157.68, "m_thang": 12.96, "m_ngay": 0.432, "m_gio": 0.018, "m_phut": 0.0003, "m_giay": 5e-06, "mm_giay": 0.005},
+            {"name": "Chậm", "m_nam": 0.158, "m_thang": 0.013, "m_ngay": 0.000432, "m_gio": 1.8e-06, "m_phut": 3e-08, "m_giay": 5e-10, "mm_giay": 5e-07},
+            {"name": "Rất chậm", "m_nam": 0.017, "m_thang": 0.0014, "m_ngay": 4.75e-05, "m_gio": 1.98e-06, "m_phut": 3.3e-08, "m_giay": 5.5e-10, "mm_giay": 5.5e-07}
+        ]
+    def start_background_tasks(self):
+        self.load_session_data()
+        threading.Thread(target=self.auto_clear_scheduler, daemon=True).start()
+        logger.info("Đã khởi chạy các tác vụ nền.")
     def start_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None:
             logger.info("Tiến trình shifting.py đã đang chạy.")
@@ -324,6 +293,14 @@ class Backend:
                 self.shifting_process.kill()
                 self.shifting_process = None
 
+    def _log_process_errors(self, pipe, process_name):
+        for line in iter(pipe.readline, b''):
+            # Lấy dòng lỗi, decode và loại bỏ khoảng trắng thừa
+            error_message = line.decode('utf-8').strip()
+            # Dùng logger của led.py để in ra với mức ERROR
+            logger.error(f"[{process_name}_ERROR]: {error_message}")
+        pipe.close()
+
     def _read_shifting_output(self, pipe):
         buffer = b''
         while not self.exiting:
@@ -345,7 +322,7 @@ class Backend:
                 
                     try:
                         data = json.loads(line_str)
-                        logger.info(f"ĐÃ NHẬN & GIẢI MÃ TỪ SHIFTING: {line_str}")
+                        # logger.info(f"ĐÃ NHẬN & GIẢI MÃ TỪ SHIFTING: {line_str}")
                         self.gui_update_queue.put(data)
                     except json.JSONDecodeError:
                         logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
@@ -362,6 +339,19 @@ class Backend:
         pipe.close()
         logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
 
+    def stop_shifting_process(self):
+        if self.shifting_process and self.shifting_process.poll() is None:
+            try:
+                logger.info("Đang dừng tiến trình shifting.py...")
+                self.shifting_process.terminate()
+                self.shifting_process.wait(timeout=5)
+                logger.info(f"Đã dừng thành công tiến trình shifting.py.")
+            except subprocess.TimeoutExpired:
+                logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
+                self.shifting_process.kill()
+            except Exception as e:
+                logger.error(f"Lỗi khi dừng shifting.py: {e}")
+        self.shifting_process = None
     def handle_gnss_report(self, data: dict):
         try:
             # Lấy vận tốc tức thời (luôn được gửi kèm) để phục vụ việc phân loại
@@ -407,21 +397,6 @@ class Backend:
         except Exception as e:
             logger.error(f"Lỗi xử lý báo cáo GNSS: {e}")
             return None
-
-    def stop_shifting_process(self):
-        if self.shifting_process and self.shifting_process.poll() is None:
-            try:
-                logger.info("Đang dừng tiến trình shifting.py...")
-                self.shifting_process.terminate()
-                self.shifting_process.wait(timeout=5)
-                logger.info(f"Đã dừng thành công tiến trình shifting.py.")
-            except subprocess.TimeoutExpired:
-                logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
-                self.shifting_process.kill()
-            except Exception as e:
-                logger.error(f"Lỗi khi dừng shifting.py: {e}")
-        self.shifting_process = None
-
     def on_message(self, client, userdata, msg):
         if not self.listening or self.exiting: return
         if msg.topic in self.gnss_topics:
@@ -430,7 +405,7 @@ class Backend:
             data = json.loads(msg.payload.decode('utf-8'))
             if "value" in data:
                 value = float(data.get("value"))
-                new_level = self.alert_manager.process_new_value(value)
+                new_level = self.alert_manager.process_new_water_value(value)
 
                 name = data.get("sensorname", msg.topic)
                 ts = float(data.get("timestamp", time.time()))
@@ -456,34 +431,106 @@ class Backend:
         except (json.JSONDecodeError, ValueError, KeyError) as e:
             logger.error(f"Lỗi xử lý message: {e} | Payload: {msg.payload.decode('utf-8', errors='ignore')}")
 
+    def start_long_term_analyzer(self):
+        if self._long_term_analyzer_thread and self._long_term_analyzer_thread.is_alive():
+            return
+        
+        logger.info("Khởi động Bộ phân tích Dịch chuyển Dài hạn.")
+        self._long_term_analyzer_thread = threading.Thread(
+            target=self._run_long_term_analysis,
+            daemon=True,
+            name="LongTermAnalyzer"
+        )
+        self._long_term_analyzer_thread.start()
+    def haversine_3d(self, p1, p2):
+        R = 6371000  # Bán kính Trái Đất (mét)
+        lat1, lon1, h1 = p1["lat"], p1["lon"], p1["h"]
+        lat2, lon2, h2 = p2["lat"], p2["lon"], p2["h"]
+        
+        # Chuyển đổi sang radians
+        lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
+        lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
+        
+        dlat = lat2_rad - lat1_rad
+        dlon = lon2_rad - lon1_rad
+        
+        # Công thức Haversine cho khoảng cách ngang
+        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        dist_2d = R * c
+        
+        # Tính khoảng cách 3D bằng định lý Pytago
+        dist_3d = math.sqrt(dist_2d**2 + (h2 - h1)**2)
+        return dist_3d
+
+    def _run_long_term_analysis(self):
+        while not self.exiting:
+            # Chạy phân tích mỗi 5 phút
+            time.sleep(300) 
+            
+            # Sao chép dữ liệu để tránh xung đột khi luồng khác đang ghi
+            history_copy = list(self.position_history_for_long_term)
+            if len(history_copy) < 2:
+                continue
+
+            now = time.time()
+            
+            # Định nghĩa các khoảng thời gian (tính bằng giây)
+            periods = {
+                "hour": 3600,
+                "day": 86400,
+                "week": 7 * 86400
+            }
+
+            latest_point = history_copy[-1]
+            avg_velocities = {}
+
+            for period_name, duration_seconds in periods.items():
+                target_timestamp = now - duration_seconds
+                
+                # Tìm điểm tham chiếu ở đầu khoảng thời gian
+                reference_point = next((p for p in history_copy if p["ts"] >= target_timestamp), None)
+                
+                if reference_point and latest_point["ts"] > reference_point["ts"]:
+                    # Tính tổng dịch chuyển (m)
+                    displacement_m = self.haversine_3d(latest_point, reference_point)
+                    
+                    # Tính tổng thời gian trôi qua (s)
+                    time_elapsed_s = latest_point["ts"] - reference_point["ts"]
+
+                    # Tính vận tốc trung bình (m/s)
+                    avg_velocity_mps = displacement_m / time_elapsed_s if time_elapsed_s > 0 else 0
+                    
+                    # Chuyển đổi sang đơn vị mm/giờ để hiển thị
+                    avg_velocity_mmph = avg_velocity_mps * 3600 * 1000
+                    
+                    avg_velocities[period_name] = {"value": avg_velocity_mmph, "unit": "mm/giờ"}
+                else:
+                    # Không có đủ dữ liệu cho khoảng thời gian này
+                    avg_velocities[period_name] = {"value": 0, "unit": "mm/giờ"}
+            
+            # Cập nhật biến của class để giao diện có thể đọc
+            self.long_term_avg_velocities = avg_velocities
+            logger.info(f"Đã cập nhật vận tốc TB dài hạn: {self.long_term_avg_velocities}")
+
     def setup_audio_mixer(self):
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
-            self._load_audio_files()
+            self.siren_sound = self._load_sound("coi1.mp3")
+            self.warning_sound = self._load_sound("warning.mp3")
+            self.critical_sound = self._load_sound("danger.mp3")
+            self.decreasing_sound = self._load_sound("decrease.mp3")
+            self.safe_sound_1 = self._load_sound("safe.mp3")
+            self.safe_sound_2 = self._load_sound("safe2.mp3")
         except Exception as e:
             logger.error(f"Không thể khởi tạo pygame mixer: {e}")
             self.mixer_initialized = False
 
-    def _load_audio_files(self):
-        if not self.mixer_initialized: return
-        
-        def load_sound(filename):
-            path = os.path.join(Constants.SOUNDS_DIR, filename)
-            if os.path.exists(path):
-                return pygame.mixer.Sound(path)
-            logger.warning(f"Không tìm thấy file âm thanh: {path}")
-            return None
-
-        try:
-            self.siren_sound = load_sound("coi1.mp3")
-            self.warning_sound = load_sound("warning.mp3")
-            self.critical_sound = load_sound("danger.mp3")
-            self.decreasing_sound = load_sound("decrease.mp3")
-            self.safe_sound_1 = load_sound("safe.mp3")
-            self.safe_sound_2 = load_sound("safe2.mp3")
-        except Exception as e:
-            logger.error(f"Lỗi khi tải file âm thanh: {e}")
+    def _load_sound(self, filename):
+        path = os.path.join(Constants.SOUNDS_DIR, filename)
+        if os.path.exists(path): return pygame.mixer.Sound(path)
+        logger.warning(f"Không tìm thấy file âm thanh: {path}"); return None
 
     def update_and_reconnect(self, settings: dict):
         self.broker, self.port = settings['broker'], int(settings['port'])
@@ -497,21 +544,16 @@ class Backend:
             self.toggle_off()
             time.sleep(1)
             self.toggle_on()
-
-    def update_topics_from_gui(self, water_topics_text, gnss_topics_text):
-        self.water_topics = [t.strip() for t in water_topics_text.splitlines() if t.strip()]
-        self.gnss_topics = [t.strip() for t in gnss_topics_text.splitlines() if t.strip()]
-        self.subscribe_topics = self.water_topics + self.gnss_topics
-
+    
     def load_config(self):
         if not os.path.exists(Constants.CONFIG_FILE):
-            logger.warning(f"File cấu hình '{Constants.CONFIG_FILE}' không tồn tại. Sử dụng giá trị mặc định.")
+            logger.warning(f"File cấu hình '{Constants.CONFIG_FILE}' không tồn tại.")
             self._reset_gnss_to_default()
             return
-            
         try:
             self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
             if "MQTT" in self.config:
+                mqtt_cfg = self.config['MQTT']
                 mqtt_cfg = self.config["MQTT"]
                 self.broker = mqtt_cfg.get("broker", self.broker)
                 self.port = mqtt_cfg.getint("port", self.port)
@@ -521,54 +563,17 @@ class Backend:
                 self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
                 self.subscribe_topics = self.water_topics + self.gnss_topics
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
-                
             if "Settings" in self.config:
+                settings_cfg = self.config['Settings']
                 settings_cfg = self.config["Settings"]
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
                 self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
-
-            if "GNSS_Classification" in self.config:
+            if "GNSS_Classification" in self.config and self.config['GNSS_Classification']:
                 self._load_gnss_from_config(self.config["GNSS_Classification"])
             else:
-                 self._reset_gnss_to_default()
-                 
-            logger.info("Đã tải cấu hình thành công.")
+                self._reset_gnss_to_default()
         except Exception as e:
-            logger.error(f"Lỗi khi tải cấu hình từ {Constants.CONFIG_FILE}: {e}")
-
-    def save_config(self):
-        try:
-            self.config['MQTT'] = {
-                'broker': self.broker, 'port': self.port, 'username': self.username,
-                'password': self.password,
-                'water_sub_topic': "\n".join(self.water_topics),
-                'gnss_sub_topic': "\n".join(self.gnss_topics),
-                'publish': self.publish_topic
-            }
-            self.config['Settings'] = {
-                'warning_threshold': self.warning_threshold,
-                'critical_threshold': self.critical_threshold
-            }
-            self.config['GNSS_Classification'] = {}
-            for i, item in enumerate(self.gnss_speed_classification):
-                for key, value in item.items():
-                    self.config['GNSS_Classification'][f'item_{i}_{key}'] = str(value)
-
-            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                self.config.write(f)
-            logger.info("Đã lưu cấu hình.")
-        except IOError as e:
-            logger.error(f"Lỗi khi lưu file cấu hình: {e}")
-            
-    def _reset_gnss_to_default(self):
-        self.gnss_speed_classification = [
-            {"name": "Nguy cấp", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": 18000, "m_phut": 300, "m_giay": 5, "mm_giay": 5000},
-            {"name": "Rất nhanh", "m_nam": "", "m_thang": "", "m_ngay": 4320, "m_gio": 180, "m_phut": 3, "m_giay": 0.05, "mm_giay": 50},
-            {"name": "Nhanh", "m_nam": 1296.0, "m_thang": 43.2, "m_ngay": 1.8, "m_gio": 0.03, "m_phut": 0.0005, "m_giay": 0.5, "mm_giay": 0.5},
-            {"name": "Trung bình", "m_nam": 157.68, "m_thang": 12.96, "m_ngay": 0.432, "m_gio": 0.018, "m_phut": 0.0003, "m_giay": 5e-06, "mm_giay": 0.005},
-            {"name": "Chậm", "m_nam": 0.158, "m_thang": 0.013, "m_ngay": 0.000432, "m_gio": 1.8e-06, "m_phut": 3e-08, "m_giay": 5e-10, "mm_giay": 5e-07},
-            {"name": "Rất chậm", "m_nam": 0.017, "m_thang": 0.0014, "m_ngay": 4.75e-05, "m_gio": 1.98e-06, "m_phut": 3.3e-08, "m_giay": 5.5e-10, "mm_giay": 5.5e-07}
-        ]
+            logger.error(f"Lỗi tải cấu hình: {e}")
 
     def _load_gnss_from_config(self, gnss_cfg):
         items_dict = {}
@@ -588,6 +593,30 @@ class Backend:
                             items_dict[item_index][attr_name] = value
         if items_dict:
             self.gnss_speed_classification = [items_dict[i] for i in sorted(items_dict.keys())]
+    
+    def save_config(self):
+        try:
+            self.config['MQTT'] = {
+                'broker': self.broker, 'port': self.port, 'username': self.username,
+                'password': self.password,
+                'water_sub_topic': "\n".join(self.water_topics),
+                'gnss_sub_topic': "\n".join(self.gnss_topics),
+                'publish': self.publish_topic
+            }
+            self.config['Settings'] = {
+                'warning_threshold': self.warning_threshold,
+                'critical_threshold': self.critical_threshold
+            }
+            self.config['GNSS_Classification'] = {}
+            for i, item in enumerate(self.gnss_speed_classification):
+                for key, value in item.items():
+                    self.config['GNSS_Classification'][f'item_{i}_{key}'] = str(value)
+            
+            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+            logger.info("Đã lưu cấu hình.")
+        except Exception as e:
+            logger.error(f"Lỗi lưu cấu hình: {e}")
 
     def cleanup_on_exit(self):
         if self.exiting: return
@@ -617,11 +646,6 @@ class Backend:
             logger.info("GPIO setup successful.")
         except Exception as e:
             logger.error(f"Lỗi khi cài đặt GPIO: {e}. Vui lòng chạy với quyền sudo.")
-
-    def start_background_tasks(self):
-        self.load_session_data()
-        threading.Thread(target=self.auto_clear_scheduler, daemon=True).start()
-        logger.info("Đã khởi chạy các tác vụ nền.")
 
     def flash_led(self, pin, duration=0.3):
         try:
@@ -664,8 +688,7 @@ class Backend:
             except queue.Empty:
                 break
         return updates
-
-    # ĐỀ XUẤT 3: CẢI THIỆN XỬ LÝ LỖI CHO MQTT
+    
     def safe_mqtt_connect(self):
         max_retries = 3
         for attempt in range(max_retries):
@@ -772,8 +795,9 @@ class Backend:
             if os.path.exists(Constants.SESSION_FILE):
                 os.remove(Constants.SESSION_FILE)
 
+
 # ==============================================================================
-# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
+# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI - KHÔI PHỤC ĐẦY ĐỦ)
 # ==============================================================================
 class AppGUI:
     def __init__(self, root: tk.Toplevel, backend: Backend, on_close_callback):
@@ -864,22 +888,10 @@ class AppGUI:
         
             if record:
                 try:
-                # --- SỬA LỖI DỨT ĐIỂM THEO API CŨ ---
-
-                # BƯỚC 1: Xác định vị trí sẽ chèn dòng mới (chính là số dòng hiện tại)
-                    new_row_index = self.sheet.get_total_rows()
-
-                # BƯỚC 2: Chèn MỘT dòng TRỐNG vào vị trí đó.
-                # Tham số đầu tiên là SỐ LƯỢNG dòng (phải là 1 hoặc lớn hơn).
-                # Tham số thứ hai là VỊ TRÍ để bắt đầu chèn.
-                    self.sheet.insert_rows(1, new_row_index)
-
-                # BƯỚC 3: Điền dữ liệu (record) vào dòng trống vừa được tạo.
-                # Ta sử dụng hàm set_row_data() để làm việc này.
-                    self.sheet.set_row_data(new_row_index, record)
-
-                # --- KẾT THÚC SỬA LỖI ---
-                
+                    GUI_DISPLAY_CAP = 2000 # Giới hạn hiển thị tối đa 2000 bản ghi
+                    all_backend_data = list(self.backend.sensor_data)
+                    data_to_display = all_backend_data[-GUI_DISPLAY_CAP:]
+                    self.sheet.set_sheet_data(data=data_to_display)
                     self.sheet.dehighlight_all()
                     last_row_index = self.sheet.get_total_rows() - 1
             
@@ -1430,9 +1442,10 @@ class AppGUI:
         self.chart_window.destroy()
         self.chart_window = None
 
-# ==============================================================================
-# KHỐI ĐIỀU KHIỂN CHÍNH (MAIN CONTROLLER)
-# ==============================================================================
+   
+# ===========================
+# KHỐI ĐIỀU KHIỂN CHÍNH 
+# ===========================
 class MainController:
     def __init__(self, backend, command_queue):
         self.backend = backend
