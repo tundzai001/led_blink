@@ -397,12 +397,14 @@ class Backend:
             except Exception as e:
                 logger.error(f"Lỗi khi dừng shifting.py: {e}")
         self.shifting_process = None
+        # === HÀM ĐÃ SỬA LỖI HOÀN CHỈNH - DÙNG HÀM NÀY ===
     def handle_gnss_report(self, data: dict):
         try:
-            # Lấy vận tốc tức thời (luôn được gửi kèm) để phục vụ việc phân loại
+            # Lấy vận tốc từ đúng vị trí của nó trong báo cáo "ultimate_analysis_report"
+            # Nó nằm ngay ở tầng đầu tiên, nên data.get(...) là đúng
             primary_velocity_mm_s = data.get("classification_velocity_mm_s", 0)
 
-            # Logic phân loại dựa trên vận tốc tức thời (giữ nguyên như cũ)
+            # Phân loại dựa trên vận tốc (Logic này đã đúng, giữ nguyên)
             classification_name = "Không xác định"
             sorted_classification = sorted(
                 [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and str(item.get('mm_giay')).strip() != ''],
@@ -415,33 +417,42 @@ class Backend:
                     classification_name = level.get('name', 'Không xác định')
                     break
             else:
-                # Nếu vận tốc > 0 nhưng không đạt ngưỡng nào, nó là "Rất chậm"
+                # Nếu vận tốc > 0 nhưng không đạt ngưỡng nào, nó sẽ là cấp độ chậm nhất
+                # Tìm cấp độ có ngưỡng mm_giay thấp nhất (nhưng > 0)
+                slowest_level = min([lvl for lvl in sorted_classification if float(lvl.get('mm_giay', 0)) > 0], key=lambda x: float(x.get('mm_giay')), default=None)
                 if primary_velocity_mm_s > 0:
-                    classification_name = "Rất chậm"
+                     # Nếu không tìm thấy mức nào > 0, mặc định là "Cực kỳ chậm"
+                    classification_name = slowest_level['name'] if slowest_level else "Cực kỳ chậm"
 
-        # Lấy các thông tin đã được tính toán và định dạng sẵn bởi shifting.py
-            name = data.get("sensorname", "GNSS")
+
+            # Lấy các thông tin để hiển thị
+            name = "GNSS Analysis"  # Đặt tên cố định cho rõ ràng
+            
+            # Lấy giá trị hiển thị từ trường "value", cũng nằm ở tầng đầu
             display_value = data.get("value", 0)
-            display_unit = data.get("unit", "N/A")
-            value_str = f"{display_value:.4f} {display_unit}"
-        
+            
+            # Tạo chuỗi giá trị để hiển thị
+            value_str = f"{display_value:.4f} mm/s"
             status = classification_name
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
-        
-            # Tạo bản ghi để hiển thị
+            
+            # Tạo bản ghi cuối cùng để đưa vào bảng
             record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
-        
+            
             # Cập nhật các dữ liệu nền
             self.sensor_data.append(record)
+            
+            # Nháy đèn LED để báo hiệu có dữ liệu mới
             threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
-        
-        # Trả về bản ghi để GUI hiển thị
+            
+            # Trả về bản ghi để GUI hiển thị
             return record
 
         except Exception as e:
-            logger.error(f"Lỗi xử lý báo cáo GNSS: {e}")
+            logger.error(f"Lỗi xử lý báo cáo GNSS: {e}\n{traceback.format_exc()}")
             return None
+
     def on_message(self, client, userdata, msg):
         if not self.listening or self.exiting: return
         if msg.topic in self.gnss_topics:
@@ -931,7 +942,7 @@ class AppGUI:
                 continue
 
             record = None
-            if isinstance(item, dict) and item.get("type") == "gnss_velocity_report":
+            if isinstance(item, dict) and item.get("type") == "ultimate_analysis_report":
                 record = self.backend.handle_gnss_report(item)
             elif isinstance(item, tuple):
                 record = item
