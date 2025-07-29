@@ -228,29 +228,59 @@ class Backend:
         atexit.register(self.cleanup_on_exit)
 
     def _reset_gnss_to_default(self):
-        logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn IUGS.")
+        logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn IUGS (bản đầy đủ).")
         self.gnss_speed_classification = [
             # Cấp 7: > 5 m/s
-            {"name": "Cực kỳ nhanh", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 5000},
-            
-            # Cấp 6: 3 m/phút - 5 m/s
-            {"name": "Rất nhanh", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 50},
-            
-            # Cấp 5: 1.8 m/giờ - 3 m/phút
-            {"name": "Nhanh", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 0.5},
-            
-            # Cấp 4: 13 m/tháng - 1.8 m/giờ
-            {"name": "Trung bình", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 0.005},
-            
-            # Cấp 3: 1.6 m/năm - 13 m/tháng
-            {"name": "Chậm", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 0.00005},
-            
-            # Cấp 2: 16 mm/năm - 1.6 m/năm
-            {"name": "Rất chậm", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 0.0000005},
-            
-            # Cấp 1: < 16 mm/năm (Bất kỳ vận tốc > 0 nào dưới ngưỡng trên)
-            {"name": "Cực kỳ chậm", "m_nam": "", "m_thang": "", "m_ngay": "", "m_gio": "", "m_phut": "", "m_giay": "", "mm_giay": 0}
+            {
+                "name": "Cực kỳ nhanh", 
+                "m_nam": "> 157,680,000", "m_thang": "> 12,960,000", "m_ngay": "> 432,000", 
+                "m_gio": "18000", "m_phut": "300", "m_giay": "5", 
+                "mm_giay": 5000
+            },
+            # Cấp 6: 3 m/phút (50 mm/s)
+            {
+                "name": "Rất nhanh", 
+                "m_nam": "1,576,800", "m_thang": "129,600", "m_ngay": "4320", 
+                "m_gio": "180", "m_phut": "3", "m_giay": "0.05", 
+                "mm_giay": 50
+            },
+            # Cấp 5: 1.8 m/giờ (0.5 mm/s)
+            {
+                "name": "Nhanh", 
+                "m_nam": "15,768", "m_thang": "1,296", "m_ngay": "43.2", 
+                "m_gio": "1.8", "m_phut": "0.03", "m_giay": "0.0005", 
+                "mm_giay": 0.5
+            },
+            # Cấp 4: 13 m/tháng (0.005 mm/s)
+            {
+                "name": "Trung bình", 
+                "m_nam": "156", "m_thang": "13", "m_ngay": "0.43", 
+                "m_gio": "0.018", "m_phut": "0.0003", "m_giay": "5e-06", 
+                "mm_giay": 0.005
+            },
+            # Cấp 3: 1.6 m/năm (5e-5 mm/s)
+            {
+                "name": "Chậm", 
+                "m_nam": "1.6", "m_thang": "0.13", "m_ngay": "0.0044", 
+                "m_gio": "0.00018", "m_phut": "3e-06", "m_giay": "5e-08", 
+                "mm_giay": 5e-05
+            },
+            # Cấp 2: 16 mm/năm (5e-7 mm/s)
+            {
+                "name": "Rất chậm", 
+                "m_nam": "0.016", "m_thang": "0.0013", "m_ngay": "4.4e-05", 
+                "m_gio": "1.8e-06", "m_phut": "3e-08", "m_giay": "5e-10", 
+                "mm_giay": 5e-07
+            },
+            # Cấp 1: < 16 mm/năm
+            {
+                "name": "Cực kỳ chậm", 
+                "m_nam": "< 0.016", "m_thang": "", "m_ngay": "", 
+                "m_gio": "", "m_phut": "", "m_giay": "", 
+                "mm_giay": 0
+            }
         ]
+
     def start_background_tasks(self):
         self.load_session_data()
         threading.Thread(target=self.auto_clear_scheduler, daemon=True).start()
