@@ -25,6 +25,7 @@ import logging
 import atexit
 import subprocess
 import math
+import traceback
 
 # Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
@@ -400,11 +401,10 @@ class Backend:
         # === HÀM ĐÃ SỬA LỖI HOÀN CHỈNH - DÙNG HÀM NÀY ===
     def handle_gnss_report(self, data: dict):
         try:
-            # Lấy vận tốc từ đúng vị trí của nó trong báo cáo "ultimate_analysis_report"
-            # Nó nằm ngay ở tầng đầu tiên, nên data.get(...) là đúng
+    # Lấy vận tốc từ đúng vị trí của nó trong báo cáo mới
             primary_velocity_mm_s = data.get("classification_velocity_mm_s", 0)
 
-            # Phân loại dựa trên vận tốc (Logic này đã đúng, giữ nguyên)
+    # Phân loại dựa trên vận tốc
             classification_name = "Không xác định"
             sorted_classification = sorted(
                 [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and str(item.get('mm_giay')).strip() != ''],
@@ -417,41 +417,27 @@ class Backend:
                     classification_name = level.get('name', 'Không xác định')
                     break
             else:
-                # Nếu vận tốc > 0 nhưng không đạt ngưỡng nào, nó sẽ là cấp độ chậm nhất
-                # Tìm cấp độ có ngưỡng mm_giay thấp nhất (nhưng > 0)
-                slowest_level = min([lvl for lvl in sorted_classification if float(lvl.get('mm_giay', 0)) > 0], key=lambda x: float(x.get('mm_giay')), default=None)
                 if primary_velocity_mm_s > 0:
-                     # Nếu không tìm thấy mức nào > 0, mặc định là "Cực kỳ chậm"
-                    classification_name = slowest_level['name'] if slowest_level else "Cực kỳ chậm"
+                    classification_name = "Rất chậm"
 
-
-            # Lấy các thông tin để hiển thị
-            name = "GNSS Analysis"  # Đặt tên cố định cho rõ ràng
-            
-            # Lấy giá trị hiển thị từ trường "value", cũng nằm ở tầng đầu
+    # Lấy các thông tin để hiển thị
+            name = data.get("sensorname", "GNSS Ultimate") # Đặt tên mới
             display_value = data.get("value", 0)
-            
-            # Tạo chuỗi giá trị để hiển thị
+    # Chúng ta có thể lấy vận tốc chi tiết hơn từ trend_analysis nếu muốn
+    # display_value = data.get("trend_analysis", {}).get("long_term_velocity_mmps", 0)
+    
             value_str = f"{display_value:.4f} mm/s"
             status = classification_name
             ts = float(data.get("timestamp", time.time()))
             dt_object = datetime.fromtimestamp(ts)
-            
-            # Tạo bản ghi cuối cùng để đưa vào bảng
             record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
-            
-            # Cập nhật các dữ liệu nền
+    
             self.sensor_data.append(record)
-            
-            # Nháy đèn LED để báo hiệu có dữ liệu mới
             threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
-            
-            # Trả về bản ghi để GUI hiển thị
             return record
-
         except Exception as e:
-            logger.error(f"Lỗi xử lý báo cáo GNSS: {e}\n{traceback.format_exc()}")
-            return None
+                logger.error(f"Lỗi xử lý báo cáo GNSS: {e}\n{traceback.format_exc()}")
+                return None
 
     def on_message(self, client, userdata, msg):
         if not self.listening or self.exiting: return
@@ -927,51 +913,92 @@ class AppGUI:
         ttk.Button(left, text="Lưu & Áp dụng", command=lambda: self.apply_and_save_config(), bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5,0))
         left.grid_rowconfigure(6, weight=1)
         left.grid_rowconfigure(8, weight=1)
-    
+
+
     def periodic_update(self):
-        if not self.root.winfo_exists(): return
+        # Kiểm tra nếu cửa sổ chính đã bị đóng
+        if not self.root.winfo_exists(): 
+            return
+        
+        # Cập nhật label trạng thái chính (ví dụ: TỰ ĐỘNG, MẤT KẾT NỐI...)
         self.update_status_label()
 
+        # Lấy tất cả các tin nhắn mới từ backend
         new_updates = self.backend.get_gui_updates()
 
         for item in new_updates:
+            if isinstance(item, dict) and item.get("type") == "collection_status":
+                collected = item['collected']
+                total = item['total']
+                
+                # Lấy thời gian hiện tại và định dạng cho giống với logger
+                timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
+                
+                # Tạo chuỗi thông báo, thêm khoảng trắng ở cuối để đảm bảo ghi đè hoàn toàn dòng cũ
+                progress_message = f"{timestamp_str} - INFO - [SHIFTING] Đang thu thập dữ liệu GNSS... ({collected}/{total})   "
+                
+                # Dùng print với ký tự '\r' để quay về đầu dòng và end='' để không tạo dòng mới
+                print(f"\r{progress_message}", end="", flush=True)
+                
+                # Nếu quá trình thu thập đã hoàn tất, in một dòng trống để các log sau
+                # không ghi đè lên dòng tiến độ cuối cùng.
+                if collected >= total:
+                    print()
+                    
+                continue # Bỏ qua các xử lý khác và chuyển sang item tiếp theo
+            
+            # Xử lý tín hiệu yêu cầu xóa dữ liệu
             if item == Constants.DATA_CLEAR_SIGNAL:
                 self.sheet.set_sheet_data(data=[])
-                if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.clear_chart_data()
+                if self.chart_window and self.chart_window.winfo_exists(): 
+                    self.chart_window.clear_chart_data()
                 logger.info("GUI đã nhận tín hiệu và xóa bảng.")
                 continue
 
+            # Xử lý các bản ghi dữ liệu để hiển thị lên bảng
             record = None
+            # Xử lý báo cáo chi tiết từ shifting.py
             if isinstance(item, dict) and item.get("type") == "ultimate_analysis_report":
                 record = self.backend.handle_gnss_report(item)
+            # Xử lý báo cáo từ các cảm biến khác (ví dụ: cảm biến nước)
             elif isinstance(item, tuple):
                 record = item
         
+            # Nếu có một bản ghi hợp lệ, cập nhật lên bảng hiển thị
             if record:
                 try:
                     GUI_DISPLAY_CAP = 2000 # Giới hạn hiển thị tối đa 2000 bản ghi
                     all_backend_data = list(self.backend.sensor_data)
                     data_to_display = all_backend_data[-GUI_DISPLAY_CAP:]
+                    
                     self.sheet.set_sheet_data(data=data_to_display)
                     self.sheet.dehighlight_all()
+                    
                     last_row_index = self.sheet.get_total_rows() - 1
             
                     if last_row_index >= 0:
-                        self.sheet.see(row=last_row_index)
+                        self.sheet.see(row=last_row_index) # Tự động cuộn đến dòng cuối
                         status = record[2]
                 
-                        if status == "NGUY HIEM": highlight_color = "#F8D7DA"
-                        elif status == "CANH BAO": highlight_color = "#FFF3CD"
-                        elif status == "AN TOAN": highlight_color = "#D4EDDA"
-                        else: highlight_color = "#E9ECEF"
+                        # Tô màu cho dòng dựa trên trạng thái
+                        if "nhanh" in status.lower() or "nguy cấp" in status.lower() or "NGUY HIEM" in status.upper(): 
+                            highlight_color = "#F8D7DA" # Màu đỏ nhạt
+                        elif "trung bình" in status.lower() or "CANH BAO" in status.upper(): 
+                            highlight_color = "#FFF3CD" # Màu vàng nhạt
+                        elif "an toàn" in status.lower() or "AN TOAN" in status.upper():
+                            highlight_color = "#D4EDDA" # Màu xanh lá nhạt
+                        else: 
+                            highlight_color = "#E9ECEF" # Màu xám nhạt cho các trạng thái còn lại
                     
                         self.sheet.highlight_rows([last_row_index], bg=highlight_color, fg="black")
                 except Exception as e:
                     logger.error(f"Lỗi khi chèn/cập nhật dòng trong tksheet: {e}")
 
+        # Cập nhật biểu đồ nếu nó đang được mở
         if self.chart_window and self.chart_window.winfo_exists(): 
             self.chart_window.update_plot()
     
+        # Lên lịch để chạy lại hàm này sau 250ms
         self.root.after(250, self.periodic_update)
 
     def on_close_window(self):
