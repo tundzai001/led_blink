@@ -22,9 +22,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
 import numpy as np
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import atexit
 import subprocess
-import math
+import psutil
+import math 
 import traceback
 
 # Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
@@ -38,16 +40,20 @@ import pygame
 # --- Cấu hình logging ---
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-file_handler = logging.FileHandler('sensor_monitor.log', encoding='utf-8')
-file_handler.setLevel(logging.INFO)
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
+info_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+info_handler = TimedRotatingFileHandler('sensor_monitor_info.log', when='midnight', interval=1, backupCount=1, encoding='utf-8')
+info_handler.setLevel(logging.INFO)
+info_handler.setFormatter(info_formatter)
+info_handler.addFilter(lambda record: record.levelno < logging.ERROR)
+logger.addHandler(info_handler)
+error_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s')
+error_handler = TimedRotatingFileHandler('sensor_monitor_error.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
+error_handler.setLevel(logging.ERROR)
+error_handler.setFormatter(error_formatter)
+logger.addHandler(error_handler)
 console_handler = logging.StreamHandler()
 console_handler.setLevel(logging.INFO)
+console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
@@ -57,6 +63,7 @@ logger.addHandler(console_handler)
 class Constants:
     CONFIG_FILE = 'config.ini'
     SESSION_FILE = "session.json"
+    SHIFTING_PID_FILE = "shifting.pid"
     SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
     LED1_PIN = 3
     LED2_PIN = 27
@@ -214,19 +221,65 @@ class Backend:
         self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
 
         self.shifting_process = None
-        
         self.latest_gnss_analysis = {}
         self.gnss_event_confirmed = False
         
         self.position_history_for_long_term = deque(maxlen=31 * 24 * 3600)
         self.long_term_avg_velocities = {}
         self._long_term_analyzer_thread = None
-
+        
+        self._cleanup_old_shifting_process()
         self.alert_manager = AlertManager(self)
         self.setup_audio_mixer()
         self.setup_gpio()
         self.load_config()
+
+        self.last_shifting_heartbeat = time.time()
+        self._shifting_liveness_thread = threading.Thread(target=self._check_shifting_liveness, daemon=True)
+        self._shifting_liveness_thread.start()
+
         atexit.register(self.cleanup_on_exit)
+
+    def _check_shifting_liveness(self):
+        HEARTBEAT_TIMEOUT = 90 # Giới hạn chờ là 90 giây
+    
+        while not self.exiting:
+        # Chỉ kiểm tra nếu chúng ta đang ở chế độ lắng nghe và tiến trình shifting tồn tại
+            if self.listening and self.shifting_process and self.shifting_process.poll() is None:
+                time_since_last_heartbeat = time.time() - self.last_shifting_heartbeat
+            
+                if time_since_last_heartbeat > HEARTBEAT_TIMEOUT:
+                    logger.critical("Không nhận được nhịp tim từ shifting.py! Có thể nó đã bị treo. Đang khởi động lại...")
+                
+                # Dừng và khởi động lại tiến trình
+                    self.stop_shifting_process()
+                    time.sleep(2) # Chờ một chút trước khi khởi động lại
+                    self.start_shifting_process()
+                
+                # Reset lại đồng hồ để cho tiến trình mới thời gian để gửi nhịp tim
+                    self.last_shifting_heartbeat = time.time() 
+
+        # Kiểm tra lại sau mỗi 60 giây
+            time.sleep(60)
+
+    def _cleanup_old_shifting_process(self):
+        """Kiểm tra và dọn dẹp tiến trình shifting.py cũ nếu có."""
+        pid_file = Constants.SHIFTING_PID_FILE
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file, 'r') as f:
+                    old_pid = int(f.read().strip())
+                
+                if psutil.pid_exists(old_pid):
+                    logger.warning(f"Phát hiện tiến trình shifting.py mồ côi với PID {old_pid}. Đang dừng nó...")
+                    process = psutil.Process(old_pid)
+                    process.kill() # Buộc dừng tiến trình cũ
+                    logger.info("Đã dừng tiến trình mồ côi thành công.")
+            except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
+                logger.warning(f"Lỗi khi dọn dẹp tiến trình cũ: {e}")
+            finally:
+                # Dù thành công hay thất bại, cũng xóa file PID cũ để tránh lỗi lặp lại
+                os.remove(pid_file)
 
     def _reset_gnss_to_default(self):
         logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn IUGS (bản đầy đủ).")
@@ -286,6 +339,7 @@ class Backend:
         self.load_session_data()
         threading.Thread(target=self.auto_clear_scheduler, daemon=True).start()
         logger.info("Đã khởi chạy các tác vụ nền.")
+    
     def start_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None:
             logger.info("Tiến trình shifting.py đã đang chạy.")
@@ -303,6 +357,7 @@ class Backend:
             ]
             for topic in self.gnss_topics:
                 command.extend(['--topic', topic])
+                command.extend(['--pid-file', Constants.SHIFTING_PID_FILE])
         
         # **THÊM MỚI: Gửi các cờ điều khiển thời gian**
             if self.gnss_time_settings.get('calculate_per_second'):
@@ -351,14 +406,8 @@ class Backend:
         buffer = b''
         while not self.exiting:
             try:
-            # Đọc 1 byte từ đường ống
                 out = pipe.read(1)
-            
-            # Nếu không đọc được gì, tiến trình con đã kết thúc
-                if out == b'':
-                    break
-                
-            # Nếu byte đọc được là ký tự xuống dòng
+                if out == b'': break
                 if out == b'\n':
                     line_str = buffer.decode('utf-8').strip()
                     buffer = b'' # Reset buffer
@@ -369,19 +418,29 @@ class Backend:
                     try:
                         data = json.loads(line_str)
                         # logger.info(f"ĐÃ NHẬN & GIẢI MÃ TỪ SHIFTING: {line_str}")
+                        if data.get("type") == "error_report":
+                            error_msg = data.get("message", "Lỗi không xác định từ shifting.py")
+                            logger.error(f"[SHIFTING_REPORT]: {error_msg}")
+                            continue # Bỏ qua, không đưa vào hàng đợi GUI
+
+                    # KIỂM TRA NHỊP TIM (đây là cho Đề xuất 3, nhưng chúng ta thêm sẵn)
+                        if data.get("type") == "heartbeat":
+                            self.last_shifting_heartbeat = time.time()
+                            continue
+
+                    # Nếu không phải tin đặc biệt, đưa vào GUI
                         self.gui_update_queue.put(data)
+                    
+                    # --- KẾT THÚC SỬA ĐỔI ---
+
                     except json.JSONDecodeError:
                         logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
-
-            # Nếu không phải ký tự xuống dòng, tiếp tục ghép vào buffer
                 else:
                     buffer += out
-
             except Exception as e:
-            # Bắt các lỗi có thể xảy ra khi tiến trình con bị dừng đột ngột
                 logger.error(f"Lỗi trong luồng đọc shifting.py: {e}")
                 break
-            
+        
         pipe.close()
         logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
 
