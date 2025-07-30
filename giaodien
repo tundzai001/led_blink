@@ -1273,12 +1273,20 @@ class AppGUI:
         water_level_frame = ttk.Frame(notebook, padding="10")
         notebook.add(water_level_frame, text='Mực nước')
     
+    # Hàm helper để tạo labeled entry - THÊM ĐỊNH NGHĨA NÀY
+        def add_labeled_entry_settings(parent, label_text, row, var):
+            ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="w", pady=5)
+            entry = ttk.Entry(parent, textvariable=var)
+            entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
+            parent.grid_columnconfigure(1, weight=1)
+            return entry
+    
     # Các trường cũ
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
     
     # Thêm phần âm thanh cho nước
-        ttk.Separator(water_level_frame).grid(row=2, column=0, columnspan=2, pady=10, sticky="ew")
+        ttk.Separator(water_level_frame).grid(row=2, column=0, columnspan=3, pady=10, sticky="ew")
     
         ttk.Label(water_level_frame, text="Âm thanh cảnh báo nước:").grid(row=3, column=0, sticky="w", pady=5)
         self.water_sound_dir_var = tk.StringVar(value=self.backend.water_sound_directory)
