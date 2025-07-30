@@ -480,8 +480,17 @@ class AppGUI:
         self.water_topic_entry = tk.Text(left, height=5, width=35)
         self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
     
-    # Advanced Settings Button
-        ttk.Button(left, text="Cài đặt Nâng cao...", command=self.open_advanced_settings, bootstyle="secondary").grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
+    # Button frame for two buttons side by side
+    button_frame = ttk.Frame(left)
+    button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
+    button_frame.grid_columnconfigure(0, weight=1)
+    button_frame.grid_columnconfigure(1, weight=1)
+
+# Save Config Button (NEW)
+    ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
+
+# Advanced Settings Button
+    ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
 
     def add_labeled_entry(self, frame, label_text, row, **kwargs):
         ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3, padx=5)
@@ -558,6 +567,54 @@ class AppGUI:
     def load_initial_data(self):
         self.broker_entry.insert(0, self.backend.broker); self.port_entry.insert(0, str(self.backend.port)); self.user_entry.insert(0, self.backend.username); self.pass_entry.insert(0, self.backend.password)
         self.water_topic_entry.insert("1.0", "\n".join(self.backend.water_topics)); self.gnss_topic_entry.insert("1.0", "\n".join(self.backend.gnss_topics))
+    
+    def save_main_config(self):
+        try:
+        # Thu thập dữ liệu từ giao diện
+            broker = self.broker_entry.get().strip()
+            port_str = self.port_entry.get().strip()
+            username = self.user_entry.get().strip()
+            password = self.pass_entry.get().strip()
+        
+        # Validate port
+            try:
+                port = int(port_str) if port_str else Constants.DEFAULT_PORT
+            except ValueError:
+                messagebox.showerror("Lỗi", "Port phải là một số nguyên!", parent=self.root)
+                return
+            
+        # Thu thập topics
+            gnss_topics_text = self.gnss_topic_entry.get("1.0", tk.END).strip()
+            water_topics_text = self.water_topic_entry.get("1.0", tk.END).strip()
+        
+            gnss_topics = [t.strip() for t in gnss_topics_text.splitlines() if t.strip()]
+            water_topics = [t.strip() for t in water_topics_text.splitlines() if t.strip()]
+        
+        # Chuẩn bị dictionary settings
+            all_settings = {
+                'broker': broker or Constants.DEFAULT_BROKER,
+                'port': port,
+                'username': username,
+                'password': password,
+                'publish_topic': self.backend.publish_topic,  # Giữ nguyên publish_topic hiện tại
+                'water_topics': water_topics,
+                'gnss_topics': gnss_topics,
+                'warning_threshold': self.backend.warning_threshold,  # Giữ nguyên ngưỡng hiện tại
+                'critical_threshold': self.backend.critical_threshold,
+                'velocity_classification_table': self.backend.velocity_classification_table  # Giữ nguyên bảng phân loại
+            }
+        
+        # Gọi hàm lưu của backend
+            success = self.backend.update_and_save_all_settings(all_settings)
+        
+            if success:
+                messagebox.showinfo("Thành công", "Đã lưu cấu hình MQTT & Topics thành công!\n\nHệ thống sẽ khởi động lại nếu đang ở chế độ TỰ ĐỘNG.", parent=self.root)
+            else:
+                messagebox.showerror("Lỗi", "Không thể lưu cấu hình. Vui lòng kiểm tra log để biết chi tiết.", parent=self.root)
+            
+        except Exception as e:
+            logger.error(f"Lỗi trong save_main_config: {e}")
+            messagebox.showerror("Lỗi", f"Đã xảy ra lỗi khi lưu cấu hình: {str(e)}", parent=self.root)
     
     def update_status_label(self):
         new_text = f"Trạng thái Bộ chỉ huy: {self.backend.status_text}"; new_style = f"{self.backend.status_color}.Inverse"
