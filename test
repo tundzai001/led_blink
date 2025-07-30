@@ -166,68 +166,99 @@ class Backend:
         return False
 
     def update_and_save_all_settings(self, settings: dict):
-        self.broker = settings['broker']; self.port = int(settings['port']); self.username = settings['username']; self.password = settings['password']
-        self.publish_topic = settings['publish_topic']
-        self.water_topics = settings['water_topics']; self.gnss_topics = settings['gnss_topics']
-        self.warning_threshold = float(settings['warning_threshold']); self.critical_threshold = float(settings['critical_threshold'])
-        self.velocity_classification_table = settings['velocity_classification_table']
-        self.save_config()
-        if self.listening: logger.info("Phát hiện thay đổi cấu hình, đang khởi động lại shifting.py..."); self.stop_shifting_process(); time.sleep(1); self.start_shifting_process()
-
-    def load_config(self):
         try:
-            if not os.path.exists(Constants.CONFIG_FILE): self.velocity_classification_table = [{"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},{"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},{"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},{"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},{"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},{"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},{"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}]; self.save_config(); return
-            self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
-            mqtt_cfg = self.config['MQTT']; self.broker = mqtt_cfg.get("broker", Constants.DEFAULT_BROKER); self.port = mqtt_cfg.getint("port", Constants.DEFAULT_PORT); self.username = mqtt_cfg.get("username", Constants.DEFAULT_USER); self.password = mqtt_cfg.get("password", Constants.DEFAULT_PASS); self.publish_topic = mqtt_cfg.get("publish_topic", ""); self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]; self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
-            settings_cfg = self.config['Settings']; self.warning_threshold = settings_cfg.getfloat("warning_threshold", Constants.DEFAULT_WARN_THRESHOLD); self.critical_threshold = settings_cfg.getfloat("critical_threshold", Constants.DEFAULT_CRIT_THRESHOLD)
-            if "VelocityClassification" in self.config and self.config["VelocityClassification"]:
-                self.velocity_classification_table = []
-                for key in sorted(self.config["VelocityClassification"].keys()):
-                    value = self.config["VelocityClassification"][key]; parts = value.split(','); self.velocity_classification_table.append({"speed_class": int(parts[0]), "name": parts[1], "threshold_mmps": float(parts[2])})
-        except Exception as e: logger.error(f"Lỗi tải cấu hình: {e}")
-
-    def load_config(self):
-        try:
-            if not os.path.exists(Constants.CONFIG_FILE): 
-            # Bảng phân loại tốc độ theo Cruden (1996) và IUGS
-                self.velocity_classification_table = [
-                    {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},      # > 5 m/s
-                    {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},            # 50 mm/s - 5 m/s  
-                    {"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},                  # 0.5 mm/s - 50 mm/s
-                    {"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},             # 1.4 mm/day - 0.5 mm/s
-                    {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},               # 0.044 mm/day - 1.4 mm/day
-                    {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},        # 0.44 mm/year - 0.044 mm/day
-                    {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}         # < 0.44 mm/year
-                ]
-                self.save_config()
-                return
+        # Cập nhật các thuộc tính Backend
+            self.broker = settings.get('broker', self.broker)
+            self.port = int(settings.get('port', self.port))
+            self.username = settings.get('username', self.username)
+            self.password = settings.get('password', self.password)
+            self.publish_topic = settings.get('publish_topic', self.publish_topic)
+        
+            self.water_topics = settings.get('water_topics', self.water_topics)
+            self.gnss_topics = settings.get('gnss_topics', self.gnss_topics)
+        
+            self.warning_threshold = float(settings.get('warning_threshold', self.warning_threshold))
+            self.critical_threshold = float(settings.get('critical_threshold', self.critical_threshold))
+        
+            self.velocity_classification_table = settings.get('velocity_classification_table', self.velocity_classification_table)
+        
+        # Lưu cấu hình
+            success = self.save_config()
+        
+            if success:
+                logger.info("Đã cập nhật và lưu cài đặt thành công.")
             
-            self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
-            mqtt_cfg = self.config['MQTT']
-            self.broker = mqtt_cfg.get("broker", Constants.DEFAULT_BROKER)
-            self.port = mqtt_cfg.getint("port", Constants.DEFAULT_PORT)
-            self.username = mqtt_cfg.get("username", Constants.DEFAULT_USER)
-            self.password = mqtt_cfg.get("password", Constants.DEFAULT_PASS)
-            self.publish_topic = mqtt_cfg.get("publish_topic", "")
-            self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]
-            self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
-        
-            settings_cfg = self.config['Settings']
-            self.warning_threshold = settings_cfg.getfloat("warning_threshold", Constants.DEFAULT_WARN_THRESHOLD)
-            self.critical_threshold = settings_cfg.getfloat("critical_threshold", Constants.DEFAULT_CRIT_THRESHOLD)
-        
-            if "VelocityClassification" in self.config and self.config["VelocityClassification"]:
-                self.velocity_classification_table = []
-                for key in sorted(self.config["VelocityClassification"].keys()):
-                    value = self.config["VelocityClassification"][key]
-                    parts = value.split(',')
-                    self.velocity_classification_table.append({
-                        "speed_class": int(parts[0]), 
-                        "name": parts[1], 
-                        "threshold_mmps": float(parts[2])
-                    })
+            # Khởi động lại shifting process nếu đang chạy
+                if self.listening:
+                    logger.info("Phát hiện thay đổi cấu hình, đang khởi động lại shifting.py...")
+                    self.stop_shifting_process()
+                    time.sleep(1)
+                    self.start_shifting_process()
             else:
-            # Nếu không có trong config, sử dụng bảng mặc định Cruden 1996 & IUGS
+                logger.error("Lỗi khi lưu cấu hình!")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Lỗi trong update_and_save_all_settings: {e}")
+            return False
+
+    def save_config(self):
+        try:
+        # Đảm bảo các section tồn tại
+            if 'MQTT' not in self.config:
+                self.config.add_section('MQTT')
+            if 'Settings' not in self.config:
+                self.config.add_section('Settings')
+            if 'VelocityClassification' not in self.config:
+                self.config.add_section('VelocityClassification')
+            
+        # Cập nhật section MQTT
+            self.config['MQTT'] = {
+                'broker': str(self.broker),
+                'port': str(self.port), 
+                'username': str(self.username),
+                'password': str(self.password),
+                'publish_topic': str(self.publish_topic),
+                'water_sub_topic': "\n".join(self.water_topics),
+                'gnss_sub_topic': "\n".join(self.gnss_topics)
+            }
+        
+        # Cập nhật section Settings
+            self.config['Settings'] = {
+                'warning_threshold': str(self.warning_threshold),
+                'critical_threshold': str(self.critical_threshold)
+            }
+        
+        # Cập nhật section VelocityClassification
+        # Xóa các key cũ trước
+            self.config.remove_section('VelocityClassification')
+            self.config.add_section('VelocityClassification')
+        
+            for i, item in enumerate(self.velocity_classification_table):
+                key = f'level_{i}'
+                value = f"{item['speed_class']},{item['name']},{item['threshold_mmps']}"
+                self.config['VelocityClassification'][key] = value
+        
+        # Ghi vào file
+            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+            
+            logger.info("Đã lưu cấu hình thành công.")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu cấu hình: {e}")
+            return False
+
+    def load_config(self):
+        try:
+        # Khởi tạo ConfigParser nếu chưa có
+            if not hasattr(self, 'config') or self.config is None:
+                self.config = configparser.ConfigParser()
+            
+            if not os.path.exists(Constants.CONFIG_FILE): 
+                logger.info("File config không tồn tại, tạo cấu hình mặc định...")
+            # Bảng phân loại tốc độ theo Cruden (1996) và IUGS
                 self.velocity_classification_table = [
                     {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},
                     {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},
@@ -236,10 +267,61 @@ class Backend:
                     {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},
                     {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},
                     {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}
-            ]
+                ]
+                self.save_config()
+                return
+        
+        # Đọc file config
+            self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
+        
+        # Load MQTT settings
+            if 'MQTT' in self.config:
+                mqtt_cfg = self.config['MQTT']
+                self.broker = mqtt_cfg.get("broker", Constants.DEFAULT_BROKER)
+                self.port = mqtt_cfg.getint("port", Constants.DEFAULT_PORT)
+                self.username = mqtt_cfg.get("username", Constants.DEFAULT_USER)
+                self.password = mqtt_cfg.get("password", Constants.DEFAULT_PASS)
+                self.publish_topic = mqtt_cfg.get("publish_topic", "")
+                self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]
+                self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
+        
+        # Load Settings
+            if 'Settings' in self.config:
+                settings_cfg = self.config['Settings']
+                self.warning_threshold = settings_cfg.getfloat("warning_threshold", Constants.DEFAULT_WARN_THRESHOLD)
+                self.critical_threshold = settings_cfg.getfloat("critical_threshold", Constants.DEFAULT_CRIT_THRESHOLD)
+        
+        # Load Velocity Classification
+            if "VelocityClassification" in self.config and self.config["VelocityClassification"]:
+                self.velocity_classification_table = []
+                for key in sorted(self.config["VelocityClassification"].keys()):
+                    value = self.config["VelocityClassification"][key]
+                    parts = value.split(',')
+                    if len(parts) >= 3:
+                        self.velocity_classification_table.append({
+                            "speed_class": int(parts[0]), 
+                            "name": parts[1], 
+                            "threshold_mmps": float(parts[2])
+                        })
+            else:
+            # Nếu không có trong config, sử dụng bảng mặc định Cruden 1996 & IUGS
+                logger.info("Sử dụng bảng phân loại mặc định Cruden 1996 & IUGS")
+                self.velocity_classification_table = [
+                    {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},
+                    {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},
+                    {"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},
+                    {"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},
+                    {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},
+                    {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},
+                    {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}
+                ]
             
+            logger.info("Đã tải cấu hình thành công.")
+        
         except Exception as e:
             logger.error(f"Lỗi tải cấu hình: {e}")
+        # Khởi tạo giá trị mặc định nếu có lỗi
+            self.config = configparser.ConfigParser()
 
     def update_velocity_classification_to_cruden_iugs(self):
         logger.info("Đang cập nhật bảng phân loại tốc độ theo Cruden 1996 & IUGS...")
