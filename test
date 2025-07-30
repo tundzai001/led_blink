@@ -22,6 +22,9 @@ import traceback
 import pygame
 from gtts import gTTS
 import io
+import RPi.GPIO as GPIO
+import platform
+IS_RASPBERRY_PI = platform.machine().startswith('arm') or platform.machine().startswith('aarch64')
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
