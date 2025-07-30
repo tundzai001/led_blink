@@ -949,6 +949,9 @@ class AppGUI:
         self.gnss_day_var = tk.BooleanVar()
         self.gnss_month_var = tk.BooleanVar()
 
+        self.water_sound_dir_var = tk.StringVar(value=self.backend.water_sound_directory)
+        self.gnss_sound_dir_var = tk.StringVar(value=self.backend.gnss_sound_directory)
+
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         
         self.create_widgets()
@@ -1289,7 +1292,6 @@ class AppGUI:
         ttk.Separator(water_level_frame).grid(row=2, column=0, columnspan=3, pady=10, sticky="ew")
     
         ttk.Label(water_level_frame, text="Âm thanh cảnh báo nước:").grid(row=3, column=0, sticky="w", pady=5)
-        self.water_sound_dir_var = tk.StringVar(value=self.backend.water_sound_directory)
         water_sound_dir_entry = ttk.Entry(water_level_frame, textvariable=self.water_sound_dir_var)
         water_sound_dir_entry.grid(row=3, column=1, sticky="ew", pady=5, padx=5)
     
@@ -1328,7 +1330,6 @@ class AppGUI:
     # Thêm phần âm thanh cho GNSS
         ttk.Separator(gnss_frame).pack(fill="x", pady=10)
         ttk.Label(gnss_frame, text="Âm thanh cảnh báo GNSS:").pack(anchor="w", pady=5)
-        self.gnss_sound_dir_var = tk.StringVar(value=self.backend.gnss_sound_directory)
         gnss_sound_dir_entry = ttk.Entry(gnss_frame, textvariable=self.gnss_sound_dir_var)
         gnss_sound_dir_entry.pack(fill="x", pady=5)
     
