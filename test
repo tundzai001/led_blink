@@ -78,6 +78,20 @@ class Backend:
         self._shifting_liveness_thread = threading.Thread(target=self._check_shifting_liveness, daemon=True); self._shifting_liveness_thread.start()
         atexit.register(self.cleanup_on_exit)
 
+    def flash_led(self, pin, duration):
+        if not IS_RASPBERRY_PI:
+            logger.info(f"Mô phỏng nhấp nháy LED trên pin {pin} trong {duration}s")
+            return
+    
+        try:
+            logger.info(f"Nhấp nháy LED trên pin {pin} trong {duration}s")
+            GPIO.output(pin, GPIO.HIGH)
+            time.sleep(duration)
+            GPIO.output(pin, GPIO.LOW)
+            logger.info(f"Đã tắt LED trên pin {pin}")
+        except Exception as e:
+            logger.error(f"Lỗi khi nhấp nháy LED trên pin {pin}: {e}")
+
     def _check_shifting_liveness(self):
         HEARTBEAT_TIMEOUT = 90
         while not self.exiting:
