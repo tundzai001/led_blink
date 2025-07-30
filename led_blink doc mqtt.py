@@ -1,205 +1,84 @@
-import RPi.GPIO as GPIO
-import time
-import threading
-import sys
-sys.path.append("/home/nam/.local/lib/python3.11/site-packages")
-import json
-import paho.mqtt.client as mqtt
-import time as t
+# generate_geotech_data_V3_Robust.py
+import numpy as np
+import pandas as pd
 
-# Cau hinh MQTT
-MQTT_BROKER = "aitogy.xyz"
-MQTT_PORT = 1883
-MQTT_TOPIC_SUB = "modbus_data_1"
-MQTT_TOPIC_PUB = "led_data"
-MQTT_USER = "abc"
-MQTT_PASS = "xyz"
+print("Bắt đầu tạo bộ dữ liệu huấn luyện THỬ THÁCH TỔNG HỢP...")
 
-# Cau hinh GPIO
-GPIO.setmode(GPIO.BCM)
-LED1_PIN = 3
-LED2_PIN = 27
-GPIO.setup(LED1_PIN, GPIO.OUT)
-GPIO.setup(LED2_PIN, GPIO.OUT)
+# --- CẤU HÌNH ---
+N_SCENARIOS = 30  # Tăng số lượng kịch bản để đa dạng hơn
+SAMPLES_PER_SCENARIO = 86400 * 2 # Mỗi kịch bản dài 2 ngày
+BASE_LAT, BASE_LON, BASE_H = 21.0739, 105.7770, 25.0
+BASE_WATER_LEVEL = -10.0
 
-# Bien trang thai
-led1_on = True
-led2_on = True
-blink_led1 = False
-blink_led2 = False
-auto_mode = False
-is_connected = False
-running = True
+# --- SINH DỮ LIỆU ---
+all_dfs = []
+total_samples = 0
 
-# MQTT Client
-client = mqtt.Client()
-client.username_pw_set(MQTT_USER, MQTT_PASS)
+for i in range(N_SCENARIOS):
+    print(f" -> Đang tạo Kịch bản Thử thách #{i+1}/{N_SCENARIOS}...")
+    
+    time_vector = np.arange(SAMPLES_PER_SCENARIO)
+    
+    # 1. Mô phỏng Nước ngầm và Dịch chuyển Vật lý (như cũ)
+    rise_duration = int(SAMPLES_PER_SCENARIO * np.random.uniform(0.5, 0.8))
+    stable_duration = SAMPLES_PER_SCENARIO - rise_duration
+    water_rise = (1 / (1 + np.exp(- (np.linspace(-6, 6, rise_duration))))) * np.random.uniform(7, 9)
+    water_stable = np.full(stable_duration, water_rise[-1]) + np.random.normal(0, 0.05, stable_duration)
+    water_levels = BASE_WATER_LEVEL + np.concatenate([water_rise, water_stable])
+    
+    consolidation_strain = (water_levels - BASE_WATER_LEVEL) * np.random.uniform(-0.005, -0.01)
+    water_pressure_factor = np.maximum(0, water_levels - (-3.0))
+    creep_velocity = water_pressure_factor * np.random.uniform(1e-9, 5e-9)
+    creep_displacement = np.cumsum(creep_velocity)
+    
+    hs = BASE_H + consolidation_strain + creep_displacement
+    lat_creep = np.cumsum(creep_velocity * np.random.uniform(0.1, 0.3)) / 111111
+    lon_creep = np.cumsum(creep_velocity * np.random.uniform(0.1, 0.3)) / 111111
+    lats = BASE_LAT + lat_creep
+    lons = BASE_LON + lon_creep
+    
+    # 2. THÊM CÁC THỬ THÁCH PHỨC TẠP
+    
+    # Thử thách A: Nhiễu địa chấn Tạm thời (Xe tải, Xây dựng)
+    for _ in range(np.random.randint(5, 15)): # 5-15 sự kiện rung động mỗi kịch bản
+        start = np.random.randint(0, SAMPLES_PER_SCENARIO - 300)
+        duration = np.random.randint(60, 300) # Kéo dài 1-5 phút
+        # Tạo một rung động tần số cao, tắt dần
+        t = np.arange(duration)
+        seismic_noise = (np.sin(t * 0.5) + np.sin(t * 1.5)) * np.exp(-t/100) * 0.008 # Rung động 8mm
+        hs[start:start+duration] += seismic_noise
 
-def try_connect():
-    global is_connected
-    try:
-        client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        print("Da ket noi toi MQTT broker")
-        is_connected = True
-    except Exception as e:
-        print("Khong the ket noi MQTT:", e)
-        is_connected = False
+    # Thử thách B: Hiệu ứng Nhiệt độ Ngày-Đêm
+    thermal_effect = -np.cos(2 * np.pi * time_vector / 86400) * 0.003 # Co giãn 3mm
+    hs += thermal_effect
+    
+    # Thử thách C: Lỗi Cảm biến Tạm thời (Glitches)
+    for _ in range(np.random.randint(1, 4)): # 1-4 lỗi mỗi kịch bản
+        # Lỗi GNSS nhảy vọt
+        idx = np.random.randint(0, SAMPLES_PER_SCENARIO)
+        hs[idx] += np.random.uniform(-0.1, 0.1) # Nhảy vọt 10cm
+        
+        # Lỗi cảm biến nước bị kẹt
+        start_kẹt = np.random.randint(0, SAMPLES_PER_SCENARIO - 600)
+        duration_kẹt = np.random.randint(300, 600) # Kẹt trong 5-10 phút
+        water_levels[start_kẹt:start_kẹt+duration_kẹt] = water_levels[start_kẹt]
 
-try_connect()
+    # Cuối cùng, thêm nhiễu RTK có độ chính xác cao
+    lats += np.random.normal(0, 0.00000002, SAMPLES_PER_SCENARIO)
+    lons += np.random.normal(0, 0.00000002, SAMPLES_PER_SCENARIO)
+    hs += np.random.normal(0, 0.005, SAMPLES_PER_SCENARIO)
 
-def auto_reconnect():
-    global is_connected
-    while running:
-        if not is_connected:
-            try_connect()
-        time.sleep(5)
+    # Tạo DataFrame cho kịch bản này
+    df = pd.DataFrame({'lat': lats, 'lon': lons, 'h': hs, 'water_level': water_levels})
+    all_dfs.append(df)
+    total_samples += len(df)
 
-threading.Thread(target=auto_reconnect, daemon=True).start()
+print("Đang kết hợp các kịch bản và lưu file...")
+final_df = pd.concat(all_dfs, ignore_index=True)
+final_df['timestamp'] = np.arange(len(final_df)) + 1753872000
+final_df.rename(columns={'h': 'height'}, inplace=True) # Đổi tên cột cho nhất quán
+final_df = final_df[['timestamp', 'lat', 'lon', 'height', 'water_level']]
 
-# Gui tin nhan
-def publish_sensor_status(value):
-    global is_connected
-    unix_time = int(t.time())
-    status = "VUOT MUC CANH BAO" if value > 1.3 else "AN TOAN"
-    msg = f"({value} {status} ,{unix_time})"
-    if is_connected:
-        try:
-            client.publish(MQTT_TOPIC_PUB, msg)
-            print("Da gui:", msg)
-        except:
-            print("Gui that bai:", msg)
-            is_connected = False
-    else:
-        print("Mat ket noi. Luu tam:", msg)
-
-# Xu ly MQTT
-def on_message(client, userdata, msg):
-    global blink_led1, blink_led2
-    if not auto_mode:
-        return
-    try:
-        data = json.loads(msg.payload.decode('utf-8'))
-        value = float(data.get("value", 0))
-
-        blink_led1 = True
-        threading.Timer(1.5, lambda: setattr(sys.modules[__name__], 'blink_led1', False)).start()
-
-        if value > 1.3:
-            blink_led2 = True
-            threading.Timer(1.5, lambda: setattr(sys.modules[__name__], 'blink_led2', False)).start()
-
-        publish_sensor_status(value)
-
-    except Exception as e:
-        print("Loi xu ly MQTT:", e)
-
-client.on_message = on_message
-client.loop_start()
-
-# Nhay led tu dong (che do tu dong)
-def auto_blink():
-    blink_state = True
-    while running:
-        if auto_mode:
-            GPIO.output(LED1_PIN, GPIO.HIGH if blink_led1 and blink_state else GPIO.LOW)
-            GPIO.output(LED2_PIN, GPIO.HIGH if blink_led2 and blink_state else GPIO.LOW)
-            blink_state = not blink_state
-            time.sleep(0.5)
-        else:
-            time.sleep(0.1)
-
-threading.Thread(target=auto_blink, daemon=True).start()
-
-# Nhay led thu cong (blink on)
-def manual_blink_loop():
-    blink_state = False
-    while running:
-        if not auto_mode and (blink_led1 or blink_led2):
-            if blink_led1:
-                GPIO.output(LED1_PIN, GPIO.HIGH if led1_on and blink_state else GPIO.LOW)
-            else:
-                GPIO.output(LED1_PIN, GPIO.HIGH if led1_on else GPIO.LOW)
-
-            if blink_led2:
-                GPIO.output(LED2_PIN, GPIO.HIGH if led2_on and blink_state else GPIO.LOW)
-            else:
-                GPIO.output(LED2_PIN, GPIO.HIGH if led2_on else GPIO.LOW)
-
-            blink_state = not blink_state
-            time.sleep(0.5)
-        else:
-            time.sleep(0.1)
-
-threading.Thread(target=manual_blink_loop, daemon=True).start()
-
-# Dieu khien led thu cong
-def manual_control_loop():
-    while running:
-        if not auto_mode:
-            if not blink_led1:
-                GPIO.output(LED1_PIN, GPIO.HIGH if led1_on else GPIO.LOW)
-            if not blink_led2:
-                GPIO.output(LED2_PIN, GPIO.HIGH if led2_on else GPIO.LOW)
-        time.sleep(0.1)
-
-threading.Thread(target=manual_control_loop, daemon=True).start()
-
-# Menu dieu khien
-print("Nhap lenh: on / off / exit")
-
-try:
-    while True:
-        cmd = input(">> ").strip().lower()
-
-        if cmd == "on":
-            auto_mode = True
-            client.subscribe(MQTT_TOPIC_SUB)
-            print(f"Da ket noi toi topic: {MQTT_TOPIC_SUB}")
-            print("Da bat che do tu dong")
-
-        elif cmd == "off":
-            auto_mode = False
-            print("Da chuyen sang che do thu cong")
-            print("Nhap lenh: led1 on/off / led2 on/off / blink on/off / exit")
-
-        elif cmd == "exit":
-            break
-
-        elif not auto_mode:
-            if cmd == "led1 on":
-                led1_on = True
-                print("LED1 da bat")
-            elif cmd == "led1 off":
-                led1_on = False
-                print("LED1 da tat")
-            elif cmd == "led2 on":
-                led2_on = True
-                print("LED2 da bat")
-            elif cmd == "led2 off":
-                led2_on = False
-                print("LED2 da tat")
-            elif cmd == "blink on":
-                led1_on = True
-                led2_on = True
-                blink_led1 = True
-                blink_led2 = True
-                print("Da bat che do nhay")
-            elif cmd == "blink off":
-                blink_led1 = False
-                blink_led2 = False
-                print("Da tat che do nhay")
-            else:
-                print("Lenh khong hop le. Nhap lai.")
-
-        else:
-            print("Lenh khong hop le. Chi nhap: on / off / exit")
-
-except KeyboardInterrupt:
-    print("Dang thoat...")
-
-finally:
-    running = False
-    time.sleep(0.2)
-    GPIO.cleanup()
-    client.disconnect()
-    print("Da thoat hoan toan.")
+final_df.to_csv('normal_data_robust.csv', index=False)
+print(f"Hoàn tất! Đã tạo 'normal_data_robust.csv' với {total_samples} dòng dữ liệu.")
+print("File này chứa các kịch bản phức tạp để huấn luyện một AI vững vàng.")
