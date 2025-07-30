@@ -64,7 +64,8 @@ class Constants:
     CONFIG_FILE = 'config.ini'
     SESSION_FILE = "session.json"
     SHIFTING_PID_FILE = "shifting.pid"
-    SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds"
+    WATER_SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds/water"
+    GNSS_SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds/gnss"
     LED1_PIN = 3
     LED2_PIN = 27
     MAX_PLOT_POINTS = 10000
@@ -227,7 +228,10 @@ class Backend:
         self.position_history_for_long_term = deque(maxlen=31 * 24 * 3600)
         self.long_term_avg_velocities = {}
         self._long_term_analyzer_thread = None
-        
+
+        self.water_sound_directory = Constants.WATER_SOUNDS_DIR
+        self.gnss_sound_directory = Constants.GNSS_SOUNDS_DIR 
+
         self._cleanup_old_shifting_process()
         self.alert_manager = AlertManager(self)
         self.setup_audio_mixer()
@@ -618,20 +622,30 @@ class Backend:
         try:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
-            self.siren_sound = self._load_sound("coi1.mp3")
-            self.warning_sound = self._load_sound("warning.mp3")
-            self.critical_sound = self._load_sound("danger.mp3")
-            self.decreasing_sound = self._load_sound("decrease.mp3")
-            self.safe_sound_1 = self._load_sound("safe.mp3")
-            self.safe_sound_2 = self._load_sound("safe2.mp3")
+            self.load_water_sounds()
         except Exception as e:
             logger.error(f"Không thể khởi tạo pygame mixer: {e}")
             self.mixer_initialized = False
 
-    def _load_sound(self, filename):
-        path = os.path.join(Constants.SOUNDS_DIR, filename)
-        if os.path.exists(path): return pygame.mixer.Sound(path)
-        logger.warning(f"Không tìm thấy file âm thanh: {path}"); return None
+        
+    def _load_water_sound(self, filename):
+        path = os.path.join(self.water_sound_directory, filename)
+        if os.path.exists(path): 
+            return pygame.mixer.Sound(path)
+        logger.warning(f"Không tìm thấy file âm thanh nước: {path}")
+        return None
+        
+    def reload_water_sounds(self):
+        try:
+            self.siren_sound = self._load_water_sound("coi1.mp3")
+            self.warning_sound = self._load_water_sound("warning.mp3")
+            self.critical_sound = self._load_water_sound("danger.mp3")
+            self.decreasing_sound = self._load_water_sound("decrease.mp3")
+            self.safe_sound_1 = self._load_water_sound("safe.mp3")
+            self.safe_sound_2 = self._load_water_sound("safe2.mp3")
+            logger.info(f"Đã tải lại âm thanh nước từ: {self.water_sound_directory}")
+        except Exception as e:
+            logger.error(f"Lỗi khi tải lại âm thanh nước: {e}")
 
     def update_and_reconnect(self, settings: dict):
         self.broker, self.port = settings['broker'], int(settings['port'])
@@ -660,7 +674,6 @@ class Backend:
             self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
             if "MQTT" in self.config:
                 mqtt_cfg = self.config['MQTT']
-                mqtt_cfg = self.config["MQTT"]
                 self.broker = mqtt_cfg.get("broker", self.broker)
                 self.port = mqtt_cfg.getint("port", self.port)
                 self.username = mqtt_cfg.get("username", self.username)
@@ -671,13 +684,18 @@ class Backend:
                 self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
             if "Settings" in self.config:
                 settings_cfg = self.config['Settings']
-                settings_cfg = self.config["Settings"]
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
                 self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
             if "GNSS_Classification" in self.config and self.config['GNSS_Classification']:
                 self._load_gnss_from_config(self.config["GNSS_Classification"])
             else:
                 self._reset_gnss_to_default()
+        
+        # Thêm phần load cấu hình âm thanh
+            if "WaterSounds" in self.config:
+                self.water_sound_directory = self.config["WaterSounds"].get("directory", Constants.WATER_SOUNDS_DIR)
+            if "GNSSSounds" in self.config:
+                self.gnss_sound_directory = self.config["GNSSSounds"].get("directory", Constants.GNSS_SOUNDS_DIR)
         except Exception as e:
             logger.error(f"Lỗi tải cấu hình: {e}")
 
@@ -717,7 +735,11 @@ class Backend:
             for i, item in enumerate(self.gnss_speed_classification):
                 for key, value in item.items():
                     self.config['GNSS_Classification'][f'item_{i}_{key}'] = str(value)
-            
+        
+        # Thêm phần lưu cấu hình âm thanh
+            self.config['WaterSounds'] = {'directory': self.water_sound_directory}
+            self.config['GNSSSounds'] = {'directory': self.gnss_sound_directory}
+        
             with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
                 self.config.write(f)
             logger.info("Đã lưu cấu hình.")
@@ -934,6 +956,17 @@ class AppGUI:
         self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
+    def browse_directory(self, var):
+        dir_path = filedialog.askdirectory(title="Chọn thư mục âm thanh")
+        if dir_path:
+            var.set(dir_path)
+
+    def reload_water_sounds(self):
+        self.backend.water_sound_directory = self.water_sound_dir_var.get().strip()
+        self.backend.reload_water_sounds()
+        messagebox.showinfo("Thành công", f"Đã tải lại âm thanh nước từ:\n{self.backend.water_sound_directory}", 
+                           parent=self.settings_window)    
+
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10)
         main.pack(fill="both", expand=True)
@@ -982,6 +1015,7 @@ class AppGUI:
         # Cập nhật label trạng thái chính (ví dụ: TỰ ĐỘNG, MẤT KẾT NỐI...)
         self.update_status_label()
 
+    
         # Lấy tất cả các tin nhắn mới từ backend
         new_updates = self.backend.get_gui_updates()
 
@@ -1057,6 +1091,10 @@ class AppGUI:
         if self.chart_window and self.chart_window.winfo_exists(): 
             self.chart_window.update_plot()
     
+        if hasattr(self, 'water_sound_dir_label'):
+            current_water_sound_dir = self.water_sound_dir_label.cget("text")
+            if current_water_sound_dir != self.backend.water_sound_directory:
+                self.water_sound_dir_label.config(text=self.backend.water_sound_directory)
         # Lên lịch để chạy lại hàm này sau 250ms
         self.root.after(250, self.periodic_update)
 
@@ -1142,7 +1180,8 @@ class AppGUI:
         return errors
 
     def apply_and_save_config(self, show_message=True, parent_window=None):
-        if parent_window is None: parent_window = self.root
+        if parent_window is None: 
+            parent_window = self.root
         
         settings = {
             'broker': self.broker_entry.get(),
@@ -1160,7 +1199,9 @@ class AppGUI:
                 'calculate_per_hour': self.gnss_hour_var.get(),
                 'calculate_per_day': self.gnss_day_var.get(),
                 'calculate_per_month': self.gnss_month_var.get()
-            }
+            },
+            'water_sound_directory': self.water_sound_dir_var.get().strip(),
+            'gnss_sound_directory': self.gnss_sound_dir_var.get().strip()
         }
 
         errors = self._validate_config(settings)
@@ -1169,8 +1210,10 @@ class AppGUI:
             return False
 
         try:
-            # Truyền cài đặt GNSS mới vào backend
+        # Truyền cài đặt GNSS mới vào backend
             self.backend.gnss_time_settings.update(settings['gnss_time_settings'])
+            self.backend.water_sound_directory = settings['water_sound_directory']
+            self.backend.gnss_sound_directory = settings['gnss_sound_directory']
             self.backend.update_and_reconnect(settings)
             if show_message:
                 messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=parent_window)
@@ -1226,50 +1269,65 @@ class AppGUI:
         notebook = ttk.Notebook(self.settings_window)
         notebook.pack(pady=10, padx=10, fill="both", expand=True)
 
-        gnss_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(gnss_frame, text='GNSS')
-        
-        # --- NÚT MỚI ĐỂ MỞ BẢNG PHÂN LOẠI ---
-        classification_button_frame = ttk.Frame(gnss_frame)
-        classification_button_frame.pack(fill="x", pady=(5, 10))
-        ttk.Button(classification_button_frame, text="Phân loại Tốc độ Dịch chuyển...", command=self.open_classification_window, bootstyle="info").pack(side="left")
-
-        # --- KHUNG MỚI CHO CÁC CHECKBOX ---
-        gnss_settings_frame = ttk.LabelFrame(gnss_frame, text="Cài đặt Tính toán Vận tốc", padding="10")
-        gnss_settings_frame.pack(fill="x", expand=True, pady=10)
-        
-        ttk.Label(gnss_settings_frame, text="Tính vận tốc theo:").pack(anchor="w", pady=5)
-        
-        # Thiết lập giá trị và tạo các Checkbox
-        time_settings = self.backend.gnss_time_settings
-        self.gnss_second_var.set(time_settings.get('calculate_per_second', True))
-        ttk.Checkbutton(gnss_settings_frame, text="Giây", variable=self.gnss_second_var).pack(anchor="w", padx=10)
-        
-        self.gnss_minute_var.set(time_settings.get('calculate_per_minute', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Phút", variable=self.gnss_minute_var).pack(anchor="w", padx=10)
-
-        self.gnss_hour_var.set(time_settings.get('calculate_per_hour', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Giờ", variable=self.gnss_hour_var).pack(anchor="w", padx=10)
-
-        self.gnss_day_var.set(time_settings.get('calculate_per_day', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Ngày", variable=self.gnss_day_var).pack(anchor="w", padx=10)
-        
-        self.gnss_month_var.set(time_settings.get('calculate_per_month', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Tháng", variable=self.gnss_month_var).pack(anchor="w", padx=10)
-
-        # Tab Mực nước
+    # Tab Mực nước
         water_level_frame = ttk.Frame(notebook, padding="10")
         notebook.add(water_level_frame, text='Mực nước')
-
-        def add_labeled_entry_settings(frame, label, row, textvariable):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=5)
-            entry = ttk.Entry(frame, textvariable=textvariable)
-            entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
-            frame.grid_columnconfigure(1, weight=1)
-
+    
+    # Các trường cũ
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
+    
+    # Thêm phần âm thanh cho nước
+        ttk.Separator(water_level_frame).grid(row=2, column=0, columnspan=2, pady=10, sticky="ew")
+    
+        ttk.Label(water_level_frame, text="Âm thanh cảnh báo nước:").grid(row=3, column=0, sticky="w", pady=5)
+        self.water_sound_dir_var = tk.StringVar(value=self.backend.water_sound_directory)
+        water_sound_dir_entry = ttk.Entry(water_level_frame, textvariable=self.water_sound_dir_var)
+        water_sound_dir_entry.grid(row=3, column=1, sticky="ew", pady=5, padx=5)
+    
+        ttk.Button(water_level_frame, text="Duyệt...", 
+                command=lambda: self.browse_directory(self.water_sound_dir_var)).grid(row=3, column=2, padx=5)
+    
+        ttk.Button(water_level_frame, text="Tải lại âm thanh", 
+                command=self.reload_water_sounds, bootstyle="info").grid(row=4, column=0, columnspan=3, pady=5)
 
+    # Tab GNSS
+        gnss_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(gnss_frame, text='GNSS')
+    
+    # Các trường cũ
+        classification_button_frame = ttk.Frame(gnss_frame)
+        classification_button_frame.pack(fill="x", pady=(5, 10))
+        ttk.Button(classification_button_frame, text="Phân loại Tốc độ Dịch chuyển...", 
+                command=self.open_classification_window, bootstyle="info").pack(side="left")
+    
+    # Cài đặt thời gian tính toán
+        gnss_settings_frame = ttk.LabelFrame(gnss_frame, text="Cài đặt Tính toán Vận tốc", padding="10")
+        gnss_settings_frame.pack(fill="x", expand=True, pady=10)
+    
+        ttk.Label(gnss_settings_frame, text="Tính vận tốc theo:").pack(anchor="w", pady=5)
+        self.gnss_second_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_second', True))
+        ttk.Checkbutton(gnss_settings_frame, text="Giây", variable=self.gnss_second_var).pack(anchor="w", padx=10)
+        self.gnss_minute_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_minute', False))
+        ttk.Checkbutton(gnss_settings_frame, text="Phút", variable=self.gnss_minute_var).pack(anchor="w", padx=10)
+        self.gnss_hour_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_hour', False))
+        ttk.Checkbutton(gnss_settings_frame, text="Giờ", variable=self.gnss_hour_var).pack(anchor="w", padx=10)
+        self.gnss_day_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_day', False))
+        ttk.Checkbutton(gnss_settings_frame, text="Ngày", variable=self.gnss_day_var).pack(anchor="w", padx=10)
+        self.gnss_month_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_month', False))
+        ttk.Checkbutton(gnss_settings_frame, text="Tháng", variable=self.gnss_month_var).pack(anchor="w", padx=10)
+    
+    # Thêm phần âm thanh cho GNSS
+        ttk.Separator(gnss_frame).pack(fill="x", pady=10)
+        ttk.Label(gnss_frame, text="Âm thanh cảnh báo GNSS:").pack(anchor="w", pady=5)
+        self.gnss_sound_dir_var = tk.StringVar(value=self.backend.gnss_sound_directory)
+        gnss_sound_dir_entry = ttk.Entry(gnss_frame, textvariable=self.gnss_sound_dir_var)
+        gnss_sound_dir_entry.pack(fill="x", pady=5)
+    
+        ttk.Button(gnss_frame, text="Duyệt...", 
+                command=lambda: self.browse_directory(self.gnss_sound_dir_var)).pack(pady=5)
+
+    # Nút Lưu & Đóng
         ttk.Button(self.settings_window, text="Lưu & Đóng", command=self.save_and_close_settings, bootstyle="success").pack(pady=10)
 
     def open_classification_window(self):
