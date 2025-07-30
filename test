@@ -19,19 +19,13 @@ import atexit
 import subprocess
 import psutil
 import traceback
+import pygame
+from gtts import gTTS
+import io
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-try:
-    import RPi.GPIO as GPIO
-    import pygame
-    from gtts import gTTS
-    import io
-    IS_RASPBERRY_PI = True
-except (ImportError, RuntimeError):
-    IS_RASPBERRY_PI = False
 
 # ==============================================================================
 # CẤU HÌNH LOGGING
@@ -100,26 +94,71 @@ class Backend:
             finally:
                 if os.path.exists(pid_file): os.remove(pid_file)
 
+    # Thêm vào hàm start_shifting_process trong class Backend
     def start_shifting_process(self):
-        if self.shifting_process and self.shifting_process.poll() is None: return
+        if self.shifting_process and self.shifting_process.poll() is None: 
+            logger.info("Shifting process đã đang chạy")
+            return
+        
         if not self.gnss_topics and not self.water_topics:
-            self.status_text, self.status_color = "LỖI: CHƯA CÓ TOPIC", "danger"; self.listening = False; return
+            self.status_text, self.status_color = "LỖI: CHƯA CÓ TOPIC", "danger"
+            self.listening = False
+            logger.error("Không có GNSS hoặc Water topics để theo dõi")
+            return
+    
         try:
+        # Kiểm tra file shifting.py có tồn tại không
+            shifting_file = 'shifting.py'
+            if not os.path.exists(shifting_file):
+                logger.error(f"File {shifting_file} không tồn tại!")
+                self.status_text, self.status_color = "LỖI: THIẾU FILE", "danger"
+                self.listening = False
+                return
+            
             command = [
-                sys.executable, '-u', 'shifting.py', '--broker', self.broker, '--port', str(self.port), '--pid-file', Constants.SHIFTING_PID_FILE,
-                '--water-warn-threshold', str(self.warning_threshold), '--water-crit-threshold', str(self.critical_threshold)]
-            if self.username: command.extend(['--username', self.username])
-            if self.password: command.extend(['--password', self.password])
-            if self.publish_topic: command.extend(['--publish-topic', self.publish_topic])
-            for topic in self.gnss_topics: command.extend(['--gnss-topic', topic])
-            for topic in self.water_topics: command.extend(['--water-topic', topic])
-            logger.info(f"Đang khởi chạy shifting.py...")
-            self.shifting_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, encoding='utf-8', bufsize=1, universal_newlines=True)
+                sys.executable, '-u', 'shifting.py', 
+                '--broker', self.broker, 
+                '--port', str(self.port), 
+                '--pid-file', Constants.SHIFTING_PID_FILE,
+                '--water-warn-threshold', str(self.warning_threshold), 
+                '--water-crit-threshold', str(self.critical_threshold)
+            ]
+        
+            if self.username: 
+                command.extend(['--username', self.username])
+            if self.password: 
+                command.extend(['--password', self.password])
+            if self.publish_topic: 
+                command.extend(['--publish-topic', self.publish_topic])
+            
+            for topic in self.gnss_topics: 
+                command.extend(['--gnss-topic', topic])
+            for topic in self.water_topics: 
+                command.extend(['--water-topic', topic])
+        
+            logger.info(f"Đang khởi chạy shifting.py với lệnh: {' '.join(command)}")
+        
+            self.shifting_process = subprocess.Popen(
+                command, 
+                stdin=subprocess.PIPE, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                encoding='utf-8', 
+                bufsize=1, 
+                universal_newlines=True
+            )
+        
+        # Bắt đầu các thread đọc output
             threading.Thread(target=self._read_shifting_output, args=(self.shifting_process.stdout,), daemon=True).start()
             threading.Thread(target=self._log_process_errors, args=(self.shifting_process.stderr,), daemon=True).start()
+        
             self.status_text, self.status_color = "TỰ ĐỘNG", "success"
+            logger.info("Đã khởi động shifting.py thành công")
+        
         except Exception as e:
-            logger.error(f"Lỗi khởi động shifting.py: {e}\n{traceback.format_exc()}"); self.status_text, self.status_color = "LỖI KHỞI ĐỘNG", "danger"; self.listening = False
+            logger.error(f"Lỗi khởi động shifting.py: {e}\n{traceback.format_exc()}")
+            self.status_text, self.status_color = "LỖI KHỞI ĐỘNG", "danger"
+            self.listening = False
 
     def _log_process_errors(self, pipe):
         for line in iter(pipe.readline, ''): logger.error(f"[SHIFTING_STDERR]: {line.strip()}")
