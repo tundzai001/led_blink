@@ -457,40 +457,43 @@ class AppGUI:
         main.grid_columnconfigure(1, weight=1); main.grid_columnconfigure(0, weight=0); main.grid_rowconfigure(0, weight=1)
         self.create_left_panel(main); self.create_right_panel(main)
 
-    def create_left_panel(self, parent):
-        left = ttk.LabelFrame(parent, text="Cấu hình MQTT & Topics", padding=10)
-        left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
+        def create_left_panel(self, parent):
+            left = ttk.LabelFrame(parent, text="Cấu hình MQTT & Topics", padding=10)
+            left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
     
-    # Cấu hình grid cho left frame
-        left.grid_columnconfigure(1, weight=1)
+        # Cấu hình grid cho left frame
+            left.grid_columnconfigure(1, weight=1)
     
-    # Sử dụng grid cho tất cả widgets
-        self.broker_entry = self.add_labeled_entry(left, "Broker:", 0)
-        self.port_entry = self.add_labeled_entry(left, "Port:", 1)
-        self.user_entry = self.add_labeled_entry(left, "Username:", 2)
-        self.pass_entry = self.add_labeled_entry(left, "Password:", 3, show="*")
+        # Sử dụng grid cho tất cả widgets
+            self.broker_entry = self.add_labeled_entry(left, "Broker:", 0)
+            self.port_entry = self.add_labeled_entry(left, "Port:", 1)
+            self.user_entry = self.add_labeled_entry(left, "Username:", 2)
+            self.pass_entry = self.add_labeled_entry(left, "Password:", 3, show="*")
     
-    # GNSS Topics
-        ttk.Label(left, text="GNSS Sub Topics:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
-        self.gnss_topic_entry = tk.Text(left, height=5, width=35)
-        self.gnss_topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        # GNSS Topics
+            ttk.Label(left, text="GNSS Sub Topics:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
+            self.gnss_topic_entry = tk.Text(left, height=5, width=35)
+            self.gnss_topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 5))
     
-    # Water Topics
-        ttk.Label(left, text="Water Sub Topics:").grid(row=6, column=0, columnspan=2, sticky="w")
-        self.water_topic_entry = tk.Text(left, height=5, width=35)
-        self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        # Water Topics
+            ttk.Label(left, text="Water Sub Topics:").grid(row=6, column=0, columnspan=2, sticky="w")
+            self.water_topic_entry = tk.Text(left, height=5, width=35)
+            self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
     
-    # Button frame for two buttons side by side
-    button_frame = ttk.Frame(left)
-    button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
-    button_frame.grid_columnconfigure(0, weight=1)
-    button_frame.grid_columnconfigure(1, weight=1)
+        # ==============================================================================
+        # >>> PHẦN MÃ BỊ LỖI ĐÃ ĐƯỢC DI CHUYỂN VÀO ĐÂY <<<
+        # ==============================================================================
+        # Button frame for two buttons side by side
+            button_frame = ttk.Frame(left)
+            button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
+            button_frame.grid_columnconfigure(0, weight=1)
+            button_frame.grid_columnconfigure(1, weight=1)
 
-# Save Config Button (NEW)
-    ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
+        # Save Config Button (NEW)
+            ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
 
-# Advanced Settings Button
-    ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
+        # Advanced Settings Button
+            ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
 
     def add_labeled_entry(self, frame, label_text, row, **kwargs):
         ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3, padx=5)
