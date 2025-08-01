@@ -457,43 +457,40 @@ class AppGUI:
         main.grid_columnconfigure(1, weight=1); main.grid_columnconfigure(0, weight=0); main.grid_rowconfigure(0, weight=1)
         self.create_left_panel(main); self.create_right_panel(main)
 
-        def create_left_panel(self, parent):
-            left = ttk.LabelFrame(parent, text="Cấu hình MQTT & Topics", padding=10)
-            left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
+    def create_left_panel(self, parent):
+        left = ttk.LabelFrame(parent, text="Cấu hình MQTT & Topics", padding=10)
+        left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
     
         # Cấu hình grid cho left frame
-            left.grid_columnconfigure(1, weight=1)
+        left.grid_columnconfigure(1, weight=1)
     
         # Sử dụng grid cho tất cả widgets
-            self.broker_entry = self.add_labeled_entry(left, "Broker:", 0)
-            self.port_entry = self.add_labeled_entry(left, "Port:", 1)
-            self.user_entry = self.add_labeled_entry(left, "Username:", 2)
-            self.pass_entry = self.add_labeled_entry(left, "Password:", 3, show="*")
+        self.broker_entry = self.add_labeled_entry(left, "Broker:", 0)
+        self.port_entry = self.add_labeled_entry(left, "Port:", 1)
+        self.user_entry = self.add_labeled_entry(left, "Username:", 2)
+        self.pass_entry = self.add_labeled_entry(left, "Password:", 3, show="*")
     
         # GNSS Topics
-            ttk.Label(left, text="GNSS Sub Topics:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
-            self.gnss_topic_entry = tk.Text(left, height=5, width=35)
-            self.gnss_topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ttk.Label(left, text="GNSS Sub Topics:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
+        self.gnss_topic_entry = tk.Text(left, height=5, width=35)
+        self.gnss_topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 5))
     
         # Water Topics
-            ttk.Label(left, text="Water Sub Topics:").grid(row=6, column=0, columnspan=2, sticky="w")
-            self.water_topic_entry = tk.Text(left, height=5, width=35)
-            self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+        ttk.Label(left, text="Water Sub Topics:").grid(row=6, column=0, columnspan=2, sticky="w")
+        self.water_topic_entry = tk.Text(left, height=5, width=35)
+        self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
     
-        # ==============================================================================
-        # >>> PHẦN MÃ BỊ LỖI ĐÃ ĐƯỢC DI CHUYỂN VÀO ĐÂY <<<
-        # ==============================================================================
         # Button frame for two buttons side by side
-            button_frame = ttk.Frame(left)
-            button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
-            button_frame.grid_columnconfigure(0, weight=1)
-            button_frame.grid_columnconfigure(1, weight=1)
+        button_frame = ttk.Frame(left)
+        button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        button_frame.grid_columnconfigure(0, weight=1)
+        button_frame.grid_columnconfigure(1, weight=1)
 
         # Save Config Button (NEW)
-            ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
+        ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
 
         # Advanced Settings Button
-            ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
+        ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
 
     def add_labeled_entry(self, frame, label_text, row, **kwargs):
         ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3, padx=5)
@@ -509,7 +506,8 @@ class AppGUI:
     def create_dashboard_widgets(self, parent):
         parent.grid_columnconfigure(0, weight=1); parent.grid_columnconfigure(1, weight=2)
         status_frame = ttk.LabelFrame(parent, text="TRẠNG THÁI HỆ THỐNG", padding=15); status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5, padx=5); status_frame.grid_columnconfigure(0, weight=1)
-        self.final_status_label = ttk.Label(status_frame, text="CHỜ DỮ LIỆU", font=("Helvetica", 28, "bold"), anchor="center"); self.final_status_label.grid(row=0, column=0, sticky="ew")
+        self.final_status_label = ttk.Label(status_frame, text="CHỜ DỮ LIỆU", font=("Helvetica", 28, "bold"), anchor="center")
+        self.final_status_label.grid(row=0, column=0, sticky="ew", pady=5) # <--- SỬA LỖI Ở ĐÂY
         self.summary_text_label = ttk.Label(status_frame, text="Cấu hình và chuyển sang chế độ TỰ ĐỘNG để bắt đầu giám sát.", font=("Helvetica", 11), wraplength=700, justify="center"); self.summary_text_label.grid(row=1, column=0, sticky="ew", pady=(5,0))
         primary_frame = ttk.LabelFrame(parent, text="Chỉ số Chính", padding=10); primary_frame.grid(row=1, column=0, sticky="nsew", pady=5, padx=5)
         self.disp_label = ttk.Label(primary_frame, text="Dịch chuyển 3D: -- mm", font=("Arial", 12)); self.disp_label.pack(pady=5, anchor="w"); self.velo_label = ttk.Label(primary_frame, text="Vận tốc 3D: -- mm/s", font=("Arial", 12)); self.velo_label.pack(pady=5, anchor="w")
@@ -760,4 +758,4 @@ if __name__ == "__main__":
         logger.info("\n" + "="*50); logger.info("KHỞI ĐỘNG LẠI CHƯƠNG TRÌNH..."); logger.info("="*50 + "\n")
         try: os.execv(sys.executable, ['python'] + sys.argv)
         except Exception as e: logger.critical(f"LỖI KHÔNG THỂ KHỞI ĐỘNG LẠI: {e}")
-    else: logger.info("Chương trình đã kết thúc.")
+    else: logger.info("Chương trình đã kết thúc.")s
