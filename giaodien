@@ -76,7 +76,18 @@ class Backend:
         self.anomaly_score_history = deque(maxlen=Constants.MAX_PLOT_POINTS); self.threat_score_history = deque(maxlen=Constants.MAX_PLOT_POINTS)
         self._cleanup_old_shifting_process(); self.setup_audio_mixer(); self.setup_gpio(); self.load_config()
         self._shifting_liveness_thread = threading.Thread(target=self._check_shifting_liveness, daemon=True); self._shifting_liveness_thread.start()
-        atexit.register(self.cleanup_on_exit)
+        self.water_status = 'INITIALIZING' 
+        self.prev_water_status = 'INITIALIZING'
+
+        self.initial_safe_counter = 0     # Đếm số lần an toàn ban đầu
+        self.return_to_safe_counter = 0   # Đếm số lần an toàn sau khi có cảnh báo  
+        self.warning_counter = 0          # Đếm số lần cảnh báo sau khi tăng từ an toàn
+        self.decreasing_warning_counter = 0 # Đếm số lần cảnh báo sau khi giảm từ nguy hiểm
+        self.initial_safe_played = False
+        self.return_to_safe_phase1_played = False
+        self.audio_queue = queue.Queue()
+        self.audio_thread = threading.Thread(target=self._audio_player_worker, daemon=True)
+        self.audio_thread.start()
 
     def flash_led(self, pin, duration):
         if not IS_RASPBERRY_PI:
@@ -91,6 +102,134 @@ class Backend:
             logger.info(f"Đã tắt LED trên pin {pin}")
         except Exception as e:
             logger.error(f"Lỗi khi nhấp nháy LED trên pin {pin}: {e}")
+
+    # ... bên trong lớp Backend ...
+
+    def _audio_player_worker(self):
+        if not self.mixer_initialized:
+            logger.warning("Audio worker không chạy vì mixer chưa được khởi tạo.")
+            return
+
+        while not self.exiting:
+            try:
+            # Chờ đợi một chuỗi file âm thanh từ hàng đợi
+                audio_files = self.audio_queue.get()
+
+                logger.info(f"Nhận được yêu cầu phát chuỗi âm thanh: {audio_files}")
+                for audio_file in audio_files:
+                # Chờ cho đến khi kênh âm thanh sẵn sàng
+                    while pygame.mixer.music.get_busy():
+                        time.sleep(0.1)
+
+                    file_path = os.path.join('sounds', audio_file)
+                    if os.path.exists(file_path):
+                        try:
+                            pygame.mixer.music.load(file_path)
+                            pygame.mixer.music.play()
+                            logger.info(f"Đang phát: {file_path}")
+                        except Exception as e:
+                            logger.error(f"Lỗi khi phát file {file_path}: {e}")
+                    else:
+                        logger.warning(f"File âm thanh không tồn tại: {file_path}")
+            
+                self.audio_queue.task_done()
+
+            except queue.Empty:
+                time.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Lỗi trong audio worker: {e}")
+
+    def play_audio_sequence(self, file_list):
+        if not self.mixer_initialized:
+            logger.warning("Bỏ qua phát âm thanh vì mixer chưa được khởi tạo.")
+            return
+        if not isinstance(file_list, list):
+            logger.error("play_audio_sequence yêu cầu một danh sách (list) các file.")
+            return
+    
+    # Xóa các yêu cầu cũ chưa được phát để ưu tiên yêu cầu mới nhất
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+    
+        self.audio_queue.put(file_list)
+
+    def process_water_level_data(self, water_level):
+        new_status = 'SAFE'
+        if water_level >= self.critical_threshold:
+            new_status = 'DANGER'
+        elif water_level >= self.warning_threshold:
+            new_status = 'WARNING'
+
+    # Nếu trạng thái không đổi, xử lý logic lặp lại
+        if new_status == self.water_status:
+            if new_status == 'SAFE':
+            # Logic đếm để quay lại trạng thái an toàn
+                if self.return_to_safe_counter > 0:
+                    self.return_to_safe_counter += 1
+                    if self.return_to_safe_counter == 10 and not self.return_to_safe_phase1_played:
+                        logger.info("NƯỚC: Quay lại an toàn ổn định (giai đoạn 1). Phát safe2.mp3.")
+                        self.play_audio_sequence(['safe2.mp3'])
+                        self.return_to_safe_phase1_played = True
+                    elif self.return_to_safe_counter == 15:
+                        logger.info("NƯỚC: Quay lại an toàn ổn định (giai đoạn 2). Phát lại safe2.mp3 và im lặng.")
+                        self.play_audio_sequence(['safe2.mp3'])
+                        self.return_to_safe_counter = 0 # Dừng đếm
+            # Logic đếm cho lần an toàn đầu tiên
+                elif not self.initial_safe_played:
+                    self.initial_safe_counter += 1
+                    if self.initial_safe_counter >= 10:
+                        logger.info("NƯỚC: Đạt trạng thái an toàn ban đầu. Phát safe.mp3.")
+                        self.play_audio_sequence(['safe.mp3'])
+                        self.initial_safe_played = True
+
+            elif new_status == 'WARNING':
+            # Logic lặp lại khi đang ở mức Cảnh báo (sau khi tăng)
+                if self.warning_counter > 0:
+                    self.warning_counter += 1
+                    if self.warning_counter % 6 == 0:
+                        logger.info("NƯỚC: Cảnh báo duy trì (tăng). Phát lại cảnh báo.")
+                        self.play_audio_sequence(['coi1.mp3', 'warning.mp3'])
+
+            # Logic lặp lại khi đang ở mức Cảnh báo (sau khi giảm)
+                elif self.decreasing_warning_counter > 0:
+                    self.decreasing_warning_counter += 1
+                    if self.decreasing_warning_counter % 10 == 0:
+                        logger.info("NƯỚC: Cảnh báo duy trì (giảm). Phát lại âm thanh giảm.")
+                        self.play_audio_sequence(['decrease.mp3'])
+
+    # Nếu có sự thay đổi trạng thái, xử lý logic chuyển tiếp
+        else:
+            self.prev_water_status = self.water_status
+            self.water_status = new_status
+            logger.info(f"NƯỚC: Trạng thái thay đổi từ {self.prev_water_status} -> {self.water_status}")
+
+        # Đặt lại tất cả các bộ đếm khi có sự thay đổi
+            self.warning_counter = 0
+            self.decreasing_warning_counter = 0
+            self.return_to_safe_counter = 0
+            self.return_to_safe_phase1_played = False
+
+            if self.water_status == 'DANGER':
+                logger.critical("NƯỚC: TRẠNG THÁI NGUY HIỂM!")
+                self.play_audio_sequence(['coi1.mp3', 'danger.mp3', 'coi1.mp3'])
+
+            elif self.water_status == 'WARNING':
+                if self.prev_water_status == 'SAFE':
+                    logger.warning("NƯỚC: Mực nước tăng lên mức CẢNH BÁO.")
+                    self.warning_counter = 1 # Bắt đầu đếm
+                    self.play_audio_sequence(['coi1.mp3', 'warning.mp3'])
+                elif self.prev_water_status == 'DANGER':
+                    logger.warning("NƯỚC: Mực nước giảm xuống mức CẢNH BÁO.")
+                    self.decreasing_warning_counter = 1 # Bắt đầu đếm
+                    self.play_audio_sequence(['decrease.mp3'])
+        
+            elif self.water_status == 'SAFE':
+                if self.prev_water_status in ['WARNING', 'DANGER']:
+                    logger.info("NƯỚC: Mực nước trở về mức AN TOÀN. Bắt đầu theo dõi độ ổn định.")
+                    self.return_to_safe_counter = 1 # Bắt đầu đếm để xác nhận an toàn    
 
     def _check_shifting_liveness(self):
         HEARTBEAT_TIMEOUT = 90
@@ -111,8 +250,6 @@ class Backend:
             finally:
                 if os.path.exists(pid_file): os.remove(pid_file)
 
-    # Thêm vào hàm 
-    #  trong class Backend
     def start_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None: 
             logger.info("Shifting process đã đang chạy")
@@ -528,7 +665,7 @@ class AppGUI:
         new_packets = self.backend.get_gui_updates()
         full_report, latest_hb = None, None
         for p_type, data in new_packets:
-            if p_type == "FULL_REPORT": full_report = data
+            if p_type == "ultimate_analysis_report": full_report = data
             elif p_type == "HEARTBEAT": latest_hb = data
             elif p_type in ["REQUEST_FOR_CONFIRMATION"] and not self.interactive_dialog_open: self.handle_interactive_request(data)
             elif p_type == "SYSTEM_NOTIFICATION": messagebox.showinfo(data['title'], data['message'], parent=self.root)
@@ -541,6 +678,8 @@ class AppGUI:
         self.backend.latest_full_report = report; ts = datetime.fromtimestamp(report.get('timestamp', time.time()))
         assessment = report.get('final_assessment', {}); status_code = assessment.get('status_code', 'UNKNOWN'); summary = assessment.get('summary_text', '...'); threat_score = assessment.get('overall_threat_score', 0)
         primary = report.get('primary_state', {}); disp = primary.get('displacement_3d_mm', 0); velo = primary.get('displacement_velocity_mmps', 0); water = primary.get('water_level_m', 0); water_roc = primary.get('water_level_roc_mm_per_min', 0)
+        if water is not None:
+            self.backend.process_water_level_data(water)
         context = report.get('contextual_analysis', {}); sentry_reason = context.get('sentry_reason', 'N/A'); ai = report.get('ai_analysis', {}); anomaly_score = ai.get('anomaly_score', 0); velo_class_info = primary.get('velocity_class_info', {}); velo_name = velo_class_info.get('name', 'N/A')
         if IS_RASPBERRY_PI and "tts_message" in report: threading.Thread(target=self.backend.speak, args=(report["tts_message"],), daemon=True).start()
         color_map = {"SAFE": "#28A745", "MONITOR": "#17A2B8", "WARNING": "#FFC107", "CRITICAL": "#DC3545", "ADAPTING": "#6C757D", "INITIALIZING": "#6C757D"}
