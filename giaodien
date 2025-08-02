@@ -1,13 +1,9 @@
-# led.py (Ultimate Version - Combined Logic & Full Original GUI)
-
 import tkinter as tk
 from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from tksheet import Sheet
-import paho.mqtt.client as mqtt
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 import threading
 import time
 import warnings
@@ -17,43 +13,37 @@ import os
 import sys
 import queue
 from collections import deque
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-import matplotlib.pyplot as plt
-import numpy as np
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import atexit
 import subprocess
 import psutil
-import math 
 import traceback
+import pygame
+from gtts import gTTS
+import io
+import RPi.GPIO as GPIO
+import platform
+IS_RASPBERRY_PI = platform.machine().startswith('arm') or platform.machine().startswith('aarch64')
 
-# Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-# --- CÁC THƯ VIỆN ĐẶC THÙ PI ---
-import RPi.GPIO as GPIO
-import pygame
-
-# --- Cấu hình logging ---
+# ==============================================================================
+# CẤU HÌNH LOGGING
+# ==============================================================================
 logger = logging.getLogger()
+info_handler.setLevel(logging.INFO); info_handler.setFormatter(info_formatter); info_handler.addFilter(lambda record: record.levelno < logging.ERROR)
 logger.setLevel(logging.INFO)
 info_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-info_handler = TimedRotatingFileHandler('sensor_monitor_info.log', when='midnight', interval=1, backupCount=1, encoding='utf-8')
-info_handler.setLevel(logging.INFO)
-info_handler.setFormatter(info_formatter)
-info_handler.addFilter(lambda record: record.levelno < logging.ERROR)
+info_handler = TimedRotatingFileHandler('sensor_monitor_info.log', when='midnight', interval=1, backupCount=7, encoding='utf-8')
 logger.addHandler(info_handler)
 error_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(pathname)s:%(lineno)d - %(message)s')
 error_handler = TimedRotatingFileHandler('sensor_monitor_error.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
-error_handler.setLevel(logging.ERROR)
-error_handler.setFormatter(error_formatter)
+error_handler.setLevel(logging.ERROR); error_handler.setFormatter(error_formatter)
 logger.addHandler(error_handler)
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.INFO)
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler = logging.StreamHandler(); console_handler.setLevel(logging.INFO); console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
@@ -61,1700 +51,708 @@ logger.addHandler(console_handler)
 # QUẢN LÝ HẰNG SỐ
 # ==============================================================================
 class Constants:
-    CONFIG_FILE = 'config.ini'
-    SESSION_FILE = "session.json"
-    SHIFTING_PID_FILE = "shifting.pid"
-    WATER_SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds/water"
-    GNSS_SOUNDS_DIR = "/home/vippro123/Desktop/code/sounds/gnss"
-    LED1_PIN = 3
-    LED2_PIN = 27
-    MAX_PLOT_POINTS = 10000
-    MAX_SENSOR_RECORDS = 10000
-    CHART_POINTS_PER_VIEW = 40
-    DEFAULT_BROKER = "aitogy.xyz"
-    DEFAULT_PORT = 1883
-    DEFAULT_USER = "abc"
-    DEFAULT_PASS = "xyz"
-    DEFAULT_WARN_THRESHOLD = 1.0
-    DEFAULT_CRIT_THRESHOLD = 1.2
+    CONFIG_FILE = 'config.ini'; SHIFTING_PID_FILE = "shifting.pid"
+    LED1_PIN = 3; LED2_PIN = 27; MAX_PLOT_POINTS = 10000
+    DEFAULT_BROKER = "localhost"; DEFAULT_PORT = 1883
+    DEFAULT_USER = ""; DEFAULT_PASS = ""
+    DEFAULT_WARN_THRESHOLD = 1.0; DEFAULT_CRIT_THRESHOLD = 1.2
     DATA_CLEAR_SIGNAL = "CLEAR_ALL_DATA"
-    WARNING_REPEAT_INTERVAL = 6
-    DECREASING_REPEAT_INTERVAL = 10
-    SAFE_READINGS_REQUIRED_INITIAL = 10
-    SAFE_READINGS_REQUIRED_RETURN_1 = 10
-    SAFE_READINGS_REQUIRED_RETURN_2 = 15
-
-# ==============================================================================
-# QUẢN LÝ CẢNH BÁO (LOGIC GỐC ĐƯỢC KHÔI PHỤC)
-# ==============================================================================
-class AlertManager:
-    def __init__(self, backend_ref):
-        self.backend = backend_ref
-        self.current_level = 0
-        self.safe_readings_count = 0
-        self.warning_readings_count = 0
-        self.decreasing_warning_count = 0
-        self.was_in_high_level_state = False
-        self.initial_safe_played = False
-        self.safe_return_phase = 0
-        self.alert_thread = None
-
-    def _play_sequence_in_thread(self, sound_list, loop=False):
-        self.stop_all_alerts()
-        if self.alert_thread and self.alert_thread.is_alive(): return
-
-        def target():
-            if not self.backend.mixer_initialized: return
-            while not self.backend.exiting:
-                for sound in sound_list:
-                    if sound and not self.backend.exiting:
-                        sound.play()
-                        while pygame.mixer.get_busy() and not self.backend.exiting:
-                            time.sleep(0.1)
-                if not loop: break
-        self.alert_thread = threading.Thread(target=target, daemon=True)
-        self.alert_thread.start()
-
-    def stop_all_alerts(self):
-        if self.backend.mixer_initialized:
-            pygame.mixer.stop()
-        self.alert_thread = None
-
-    def trigger_critical_event_alarm(self):
-        if self.current_level != 3:
-            logger.critical("!!! SỰ KIỆN KHẨN CẤP GNSS ĐƯỢC KÍCH HOẠT !!!")
-            self.current_level = 3
-            self.was_in_high_level_state = True
-            self._play_sequence_in_thread([self.backend.siren_sound, self.backend.critical_sound], loop=True)
-
-    def process_new_water_value(self, value):
-        if self.current_level == 3: return 2
-    
-        previous_level = self.current_level
-        new_level = self._calculate_alert_level(value)
-
-        if new_level == 0: self._handle_safe_state()
-        elif new_level == 1: self._handle_warning_state(previous_level)
-        elif new_level == 2: self._handle_critical_state()
-
-        if new_level != previous_level:
-            if new_level == 0 and previous_level > 0: self.safe_readings_count = 1
-            logger.info(f"Cảnh báo nước: Chuyển trạng thái {previous_level} -> {new_level}")
-
-        self.current_level = new_level
-        return new_level
-
-    def _calculate_alert_level(self, value):
-        if value >= self.backend.critical_threshold: return 2
-        elif value >= self.backend.warning_threshold: return 1
-        return 0
-
-    def _handle_safe_state(self):
-        self.warning_readings_count = 0
-        self.decreasing_warning_count = 0
-        self.safe_readings_count += 1
-        if not self.was_in_high_level_state:
-            if not self.initial_safe_played and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_INITIAL:
-                self._play_sequence_in_thread([self.backend.safe_sound_1])
-                self.initial_safe_played = True
-        else:
-            if self.safe_return_phase == 0: self.safe_return_phase = 1
-            if self.safe_return_phase == 1 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_1:
-                self._play_sequence_in_thread([self.backend.safe_sound_2])
-                self.safe_return_phase = 2
-            elif self.safe_return_phase == 2 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_2:
-                self._play_sequence_in_thread([self.backend.safe_sound_2])
-                self.safe_return_phase = 3; self.was_in_high_level_state = False; self.initial_safe_played = True
-
-    def _handle_warning_state(self, previous_level):
-        self.safe_readings_count = 0; self.safe_return_phase = 0
-        if not self.was_in_high_level_state: self.was_in_high_level_state = True
-        
-        if previous_level == 0:
-            self._play_sequence_in_thread([self.backend.siren_sound, self.backend.warning_sound])
-            self.warning_readings_count = 1; self.decreasing_warning_count = 0
-        elif previous_level == 2:
-            self._play_sequence_in_thread([self.backend.decreasing_sound])
-            self.decreasing_warning_count = 1; self.warning_readings_count = 0
-        elif previous_level == 1:
-            if self.warning_readings_count > 0:
-                self.warning_readings_count += 1
-                if self.warning_readings_count % Constants.WARNING_REPEAT_INTERVAL == 0:
-                     self._play_sequence_in_thread([self.backend.siren_sound, self.backend.warning_sound])
-            elif self.decreasing_warning_count > 0:
-                self.decreasing_warning_count += 1
-                if self.decreasing_warning_count % Constants.DECREASING_REPEAT_INTERVAL == 0:
-                    self._play_sequence_in_thread([self.backend.decreasing_sound])
-
-    def _handle_critical_state(self):
-        self.safe_readings_count = 0; self.warning_readings_count = 0
-        self.decreasing_warning_count = 0; self.safe_return_phase = 0
-        if not self.was_in_high_level_state: self.was_in_high_level_state = True
-        self._play_sequence_in_thread([self.backend.siren_sound, self.backend.critical_sound, self.backend.siren_sound])
 
 # ==============================================================================
 # LỚP LOGIC NỀN (BACKEND)
 # ==============================================================================
 class Backend:
     def __init__(self):
-        self.listening = False; self.exiting = False
-        self.status_text = "Trạng thái: THỦ CÔNG"; self.status_color = "red"
-        
-        self.config = configparser.ConfigParser()
-        self.broker = Constants.DEFAULT_BROKER; self.port = Constants.DEFAULT_PORT
-        self.username = Constants.DEFAULT_USER; self.password = Constants.DEFAULT_PASS
-        self.publish_topic = ""; self.water_topics = []; self.gnss_topics = []
-        self.warning_threshold = Constants.DEFAULT_WARN_THRESHOLD
-        self.critical_threshold = Constants.DEFAULT_CRIT_THRESHOLD
-        self.gnss_time_settings = {}
-        self.gnss_speed_classification = []
-        self.mixer_initialized = False
-        self.gnss_speed_classification = []
-
-        self.mixer_initialized = False; self.warning_sound = None; self.critical_sound = None; self.siren_sound = None
-        self.decreasing_sound = None; self.safe_sound_1 = None; self.safe_sound_2 = None
-        
-        self.sensor_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
-        self.plot_data_points = deque(maxlen=Constants.MAX_PLOT_POINTS)
-        self.gui_update_queue = queue.Queue()
-        
-        self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
-        self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
-
-        self.shifting_process = None
-        self.latest_gnss_analysis = {}
-        self.gnss_event_confirmed = False
-        
-        self.position_history_for_long_term = deque(maxlen=31 * 24 * 3600)
-        self.long_term_avg_velocities = {}
-        self._long_term_analyzer_thread = None
-
-        self.water_sound_directory = Constants.WATER_SOUNDS_DIR
-        self.gnss_sound_directory = Constants.GNSS_SOUNDS_DIR 
-
-        self._cleanup_old_shifting_process()
-        self.alert_manager = AlertManager(self)
-        self.setup_audio_mixer()
-        self.setup_gpio()
-        self.load_config()
-
+        self.listening = False; self.exiting = False; self.status_text = "THỦ CÔNG"; self.status_color = "danger"
+        self.config = configparser.ConfigParser(); self.broker = Constants.DEFAULT_BROKER; self.port = Constants.DEFAULT_PORT
+        self.username = Constants.DEFAULT_USER; self.password = Constants.DEFAULT_PASS; self.publish_topic = ""
+        self.water_topics = []; self.gnss_topics = []
+        self.warning_threshold = Constants.DEFAULT_WARN_THRESHOLD; self.critical_threshold = Constants.DEFAULT_CRIT_THRESHOLD
+        self.velocity_classification_table = []
+        self.mixer_initialized = False; self.shifting_process = None
         self.last_shifting_heartbeat = time.time()
-        self._shifting_liveness_thread = threading.Thread(target=self._check_shifting_liveness, daemon=True)
-        self._shifting_liveness_thread.start()
-
+        self.gui_update_queue = queue.Queue(); self.latest_full_report = {}
+        self.displacement_history = deque(maxlen=Constants.MAX_PLOT_POINTS); self.water_level_history = deque(maxlen=Constants.MAX_PLOT_POINTS)
+        self.anomaly_score_history = deque(maxlen=Constants.MAX_PLOT_POINTS); self.threat_score_history = deque(maxlen=Constants.MAX_PLOT_POINTS)
+        self._cleanup_old_shifting_process(); self.setup_audio_mixer(); self.setup_gpio(); self.load_config()
+        self._shifting_liveness_thread = threading.Thread(target=self._check_shifting_liveness, daemon=True); self._shifting_liveness_thread.start()
         atexit.register(self.cleanup_on_exit)
 
-    def _check_shifting_liveness(self):
-        HEARTBEAT_TIMEOUT = 90 # Giới hạn chờ là 90 giây
+    def flash_led(self, pin, duration):
+        if not IS_RASPBERRY_PI:
+            logger.info(f"Mô phỏng nhấp nháy LED trên pin {pin} trong {duration}s")
+            return
     
-        while not self.exiting:
-        # Chỉ kiểm tra nếu chúng ta đang ở chế độ lắng nghe và tiến trình shifting tồn tại
-            if self.listening and self.shifting_process and self.shifting_process.poll() is None:
-                time_since_last_heartbeat = time.time() - self.last_shifting_heartbeat
-            
-                if time_since_last_heartbeat > HEARTBEAT_TIMEOUT:
-                    logger.critical("Không nhận được nhịp tim từ shifting.py! Có thể nó đã bị treo. Đang khởi động lại...")
-                
-                # Dừng và khởi động lại tiến trình
-                    self.stop_shifting_process()
-                    time.sleep(2) # Chờ một chút trước khi khởi động lại
-                    self.start_shifting_process()
-                
-                # Reset lại đồng hồ để cho tiến trình mới thời gian để gửi nhịp tim
-                    self.last_shifting_heartbeat = time.time() 
+        try:
+            logger.info(f"Nhấp nháy LED trên pin {pin} trong {duration}s")
+            GPIO.output(pin, GPIO.HIGH)
+            time.sleep(duration)
+            GPIO.output(pin, GPIO.LOW)
+            logger.info(f"Đã tắt LED trên pin {pin}")
+        except Exception as e:
+            logger.error(f"Lỗi khi nhấp nháy LED trên pin {pin}: {e}")
 
-        # Kiểm tra lại sau mỗi 60 giây
-            time.sleep(60)
+    def _check_shifting_liveness(self):
+        HEARTBEAT_TIMEOUT = 90
+        while not self.exiting:
+            if self.listening and self.shifting_process and self.shifting_process.poll() is None:
+                if time.time() - self.last_shifting_heartbeat > HEARTBEAT_TIMEOUT:
+                    logger.critical("Không nhận được nhịp tim từ shifting.py! Đang khởi động lại...")
+                    self.stop_shifting_process(); time.sleep(2); self.start_shifting_process()
+            time.sleep(30)
 
     def _cleanup_old_shifting_process(self):
-        """Kiểm tra và dọn dẹp tiến trình shifting.py cũ nếu có."""
         pid_file = Constants.SHIFTING_PID_FILE
         if os.path.exists(pid_file):
             try:
-                with open(pid_file, 'r') as f:
-                    old_pid = int(f.read().strip())
-                
-                if psutil.pid_exists(old_pid):
-                    logger.warning(f"Phát hiện tiến trình shifting.py mồ côi với PID {old_pid}. Đang dừng nó...")
-                    process = psutil.Process(old_pid)
-                    process.kill() # Buộc dừng tiến trình cũ
-                    logger.info("Đã dừng tiến trình mồ côi thành công.")
-            except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied) as e:
-                logger.warning(f"Lỗi khi dọn dẹp tiến trình cũ: {e}")
+                with open(pid_file, 'r') as f: old_pid = int(f.read().strip())
+                if psutil.pid_exists(old_pid): logger.warning(f"Dọn dẹp tiến trình shifting.py mồ côi PID {old_pid}..."); psutil.Process(old_pid).kill()
+            except (ValueError, psutil.Error): pass
             finally:
-                # Dù thành công hay thất bại, cũng xóa file PID cũ để tránh lỗi lặp lại
-                os.remove(pid_file)
+                if os.path.exists(pid_file): os.remove(pid_file)
 
-    def _reset_gnss_to_default(self):
-        logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn IUGS (bản đầy đủ).")
-        self.gnss_speed_classification = [
-            # Cấp 7: > 5 m/s
-            {
-                "name": "Cực kỳ nhanh", 
-                "m_nam": "> 157,680,000", "m_thang": "> 12,960,000", "m_ngay": "> 432,000", 
-                "m_gio": "18000", "m_phut": "300", "m_giay": "5", 
-                "mm_giay": 5000
-            },
-            # Cấp 6: 3 m/phút (50 mm/s)
-            {
-                "name": "Rất nhanh", 
-                "m_nam": "1,576,800", "m_thang": "129,600", "m_ngay": "4320", 
-                "m_gio": "180", "m_phut": "3", "m_giay": "0.05", 
-                "mm_giay": 50
-            },
-            # Cấp 5: 1.8 m/giờ (0.5 mm/s)
-            {
-                "name": "Nhanh", 
-                "m_nam": "15,768", "m_thang": "1,296", "m_ngay": "43.2", 
-                "m_gio": "1.8", "m_phut": "0.03", "m_giay": "0.0005", 
-                "mm_giay": 0.5
-            },
-            # Cấp 4: 13 m/tháng (0.005 mm/s)
-            {
-                "name": "Trung bình", 
-                "m_nam": "156", "m_thang": "13", "m_ngay": "0.43", 
-                "m_gio": "0.018", "m_phut": "0.0003", "m_giay": "5e-06", 
-                "mm_giay": 0.005
-            },
-            # Cấp 3: 1.6 m/năm (5e-5 mm/s)
-            {
-                "name": "Chậm", 
-                "m_nam": "1.6", "m_thang": "0.13", "m_ngay": "0.0044", 
-                "m_gio": "0.00018", "m_phut": "3e-06", "m_giay": "5e-08", 
-                "mm_giay": 5e-05
-            },
-            # Cấp 2: 16 mm/năm (5e-7 mm/s)
-            {
-                "name": "Rất chậm", 
-                "m_nam": "0.016", "m_thang": "0.0013", "m_ngay": "4.4e-05", 
-                "m_gio": "1.8e-06", "m_phut": "3e-08", "m_giay": "5e-10", 
-                "mm_giay": 5e-07
-            },
-            # Cấp 1: < 16 mm/năm
-            {
-                "name": "Cực kỳ chậm", 
-                "m_nam": "< 0.016", "m_thang": "", "m_ngay": "", 
-                "m_gio": "", "m_phut": "", "m_giay": "", 
-                "mm_giay": 0
-            }
-        ]
-
-    def start_background_tasks(self):
-        self.load_session_data()
-        threading.Thread(target=self.auto_clear_scheduler, daemon=True).start()
-        logger.info("Đã khởi chạy các tác vụ nền.")
-    
+    # Thêm vào hàm 
+    #  trong class Backend
     def start_shifting_process(self):
-        if self.shifting_process and self.shifting_process.poll() is None:
-            logger.info("Tiến trình shifting.py đã đang chạy.")
+        if self.shifting_process and self.shifting_process.poll() is None: 
+            logger.info("Shifting process đã đang chạy")
             return
-        if not self.gnss_topics:
-            logger.warning("Không có topic GNSS nào để khởi động shifting.py.")
+        
+        if not self.gnss_topics and not self.water_topics:
+            self.status_text, self.status_color = "LỖI: THIẾU GNSS TOPIC", "danger"
+            self.listening = False
+            logger.error("Không có GNSS topics để shifting.py theo dõi. Không thể khởi động.")
+    
             return
         try:
+        # Kiểm tra file shifting.py có tồn tại không
+            shifting_file = 'shifting.py'
+            if not os.path.exists(shifting_file):
+                logger.error(f"File {shifting_file} không tồn tại!")
+                self.status_text, self.status_color = "LỖI: THIẾU FILE", "danger"
+                self.listening = False
+                return
+            
             command = [
-                sys.executable, '-u', 'shifting.py',
-                '--broker', self.broker,
-                '--port', str(self.port),
-                '--username', self.username,
-                '--password', self.password
+                sys.executable, '-u', 'shifting.py', 
+                '--broker', self.broker, 
+                '--port', str(self.port), 
+                '--pid-file', Constants.SHIFTING_PID_FILE,
             ]
-            for topic in self.gnss_topics:
-                command.extend(['--topic', topic])
-                command.extend(['--pid-file', Constants.SHIFTING_PID_FILE])
         
-        # **THÊM MỚI: Gửi các cờ điều khiển thời gian**
-            if self.gnss_time_settings.get('calculate_per_second'):
-                command.append('--calc-second')
-            if self.gnss_time_settings.get('calculate_per_minute'):
-                command.append('--calc-minute')
-            if self.gnss_time_settings.get('calculate_per_hour'):
-                command.append('--calc-hour')
-            if self.gnss_time_settings.get('calculate_per_day'):
-                command.append('--calc-day')
-            if self.gnss_time_settings.get('calculate_per_month'):
-                command.append('--calc-month')
+            if self.username: 
+                command.extend(['--username', self.username])
+            if self.password: 
+                command.extend(['--password', self.password])
+            
+            for topic in self.gnss_topics: 
+                command.extend(['--gnss-topic', topic])
+            for topic in self.water_topics: 
+                command.extend(['--water-topic', topic])
         
             logger.info(f"Đang khởi chạy shifting.py với lệnh: {' '.join(command)}")
-
+        
             self.shifting_process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                command, 
+                stdin=subprocess.PIPE, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.PIPE, 
+                encoding='utf-8', 
+                bufsize=1, 
+                universal_newlines=True
             )
         
-            threading.Thread(
-                target=self._read_shifting_output,
-                args=(self.shifting_process.stdout,),
-                daemon=True,
-                name="ShiftingOutputReader"
-            ).start()
+        # Bắt đầu các thread đọc output
+            threading.Thread(target=self._read_shifting_output, args=(self.shifting_process.stdout,), daemon=True).start()
+            threading.Thread(target=self._log_process_errors, args=(self.shifting_process.stderr,), daemon=True).start()
         
-            logger.info("Đã khởi động tiến trình shifting.py và luồng đọc kết quả.")
-
+            self.status_text, self.status_color = "TỰ ĐỘNG", "success"
+            logger.info("Đã khởi động shifting.py thành công")
+        
         except Exception as e:
-            logger.error(f"Lỗi khởi động shifting.py: {e}")
-            if self.shifting_process:
-                self.shifting_process.kill()
-                self.shifting_process = None
+            logger.error(f"Lỗi khởi động shifting.py: {e}\n{traceback.format_exc()}")
+            self.status_text, self.status_color = "LỖI KHỞI ĐỘNG", "danger"
+            self.listening = False
 
-    def _log_process_errors(self, pipe, process_name):
-        for line in iter(pipe.readline, b''):
-            # Lấy dòng lỗi, decode và loại bỏ khoảng trắng thừa
-            error_message = line.decode('utf-8').strip()
-            # Dùng logger của led.py để in ra với mức ERROR
-            logger.error(f"[{process_name}_ERROR]: {error_message}")
-        pipe.close()
+    def _log_process_errors(self, pipe):
+        for line in iter(pipe.readline, ''): logger.error(f"[SHIFTING_STDERR]: {line.strip()}")
 
     def _read_shifting_output(self, pipe):
-        buffer = b''
-        while not self.exiting:
+        for line in iter(pipe.readline, ''):
+            if self.exiting: break
+            line_str = line.strip();
+            if not line_str: continue
             try:
-                out = pipe.read(1)
-                if out == b'': break
-                if out == b'\n':
-                    line_str = buffer.decode('utf-8').strip()
-                    buffer = b'' # Reset buffer
-
-                    if not line_str:
-                        continue
-                
-                    try:
-                        data = json.loads(line_str)
-                        # logger.info(f"ĐÃ NHẬN & GIẢI MÃ TỪ SHIFTING: {line_str}")
-                        if data.get("type") == "error_report":
-                            error_msg = data.get("message", "Lỗi không xác định từ shifting.py")
-                            logger.error(f"[SHIFTING_REPORT]: {error_msg}")
-                            continue # Bỏ qua, không đưa vào hàng đợi GUI
-
-                    # KIỂM TRA NHỊP TIM (đây là cho Đề xuất 3, nhưng chúng ta thêm sẵn)
-                        if data.get("type") == "heartbeat":
-                            self.last_shifting_heartbeat = time.time()
-                            continue
-
-                    # Nếu không phải tin đặc biệt, đưa vào GUI
-                        self.gui_update_queue.put(data)
-                    
-                    # --- KẾT THÚC SỬA ĐỔI ---
-
-                    except json.JSONDecodeError:
-                        logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
-                else:
-                    buffer += out
-            except Exception as e:
-                logger.error(f"Lỗi trong luồng đọc shifting.py: {e}")
-                break
-        
-        pipe.close()
+                data = json.loads(line_str); packet_type = data.get("type")
+                if packet_type: self.gui_update_queue.put((packet_type, data)); self.last_shifting_heartbeat = time.time()
+            except (json.JSONDecodeError, Exception) as e: logger.warning(f"Lỗi xử lý output từ shifting.py: {e}")
         logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
 
     def stop_shifting_process(self):
         if self.shifting_process and self.shifting_process.poll() is None:
-            try:
-                logger.info("Đang dừng tiến trình shifting.py...")
-                self.shifting_process.terminate()
-                self.shifting_process.wait(timeout=5)
-                logger.info(f"Đã dừng thành công tiến trình shifting.py.")
-            except subprocess.TimeoutExpired:
-                logger.warning("Tiến trình shifting.py không phản hồi, buộc dừng (kill).")
-                self.shifting_process.kill()
-            except Exception as e:
-                logger.error(f"Lỗi khi dừng shifting.py: {e}")
+            try: logger.info("Đang dừng tiến trình shifting.py..."); self.shifting_process.terminate(); self.shifting_process.wait(timeout=5)
+            except subprocess.TimeoutExpired: logger.warning("Buộc dừng shifting.py."); self.shifting_process.kill()
+            except Exception as e: logger.error(f"Lỗi khi dừng shifting.py: {e}")
         self.shifting_process = None
-        # === HÀM ĐÃ SỬA LỖI HOÀN CHỈNH - DÙNG HÀM NÀY ===
-    def handle_gnss_report(self, data: dict):
-        try:
-    # Lấy vận tốc từ đúng vị trí của nó trong báo cáo mới
-            primary_velocity_mm_s = data.get("classification_velocity_mm_s", 0)
-
-    # Phân loại dựa trên vận tốc
-            classification_name = "Không xác định"
-            sorted_classification = sorted(
-                [item for item in self.gnss_speed_classification if item.get('mm_giay') is not None and str(item.get('mm_giay')).strip() != ''],
-                key=lambda x: float(x.get('mm_giay')),
-                reverse=True
-            )
-            for level in sorted_classification:
-                threshold = float(level.get('mm_giay', 0))
-                if primary_velocity_mm_s >= threshold:
-                    classification_name = level.get('name', 'Không xác định')
-                    break
-            else:
-                if primary_velocity_mm_s > 0:
-                    classification_name = "Rất chậm"
-
-    # Lấy các thông tin để hiển thị
-            name = data.get("sensorname", "GNSS Ultimate") # Đặt tên mới
-            display_value = data.get("value", 0)
-    # Chúng ta có thể lấy vận tốc chi tiết hơn từ trend_analysis nếu muốn
-    # display_value = data.get("trend_analysis", {}).get("long_term_velocity_mmps", 0)
-    
-            value_str = f"{display_value:.4f} mm/s"
-            status = classification_name
-            ts = float(data.get("timestamp", time.time()))
-            dt_object = datetime.fromtimestamp(ts)
-            record = (name, value_str, status, dt_object.strftime("%H:%M:%S %d-%m"))
-    
-            self.sensor_data.append(record)
-            threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
-            return record
-        except Exception as e:
-                logger.error(f"Lỗi xử lý báo cáo GNSS: {e}\n{traceback.format_exc()}")
-                return None
-
-    def on_message(self, client, userdata, msg):
-        if not self.listening or self.exiting: return
-        if msg.topic in self.gnss_topics:
-            return
-        try:
-            data = json.loads(msg.payload.decode('utf-8'))
-            if "value" in data:
-                value = float(data.get("value"))
-                new_level = self.alert_manager.process_new_water_value(value)
-
-                name = data.get("sensorname", msg.topic)
-                ts = float(data.get("timestamp", time.time()))
-                dt_object = datetime.fromtimestamp(ts)
-                status = "NGUY HIEM" if new_level == 2 else ("CANH BAO" if new_level == 1 else "AN TOAN")
-                
-                # Hiển thị giá trị gốc (mét) cho cảm biến nước
-                record = (name, f"{value:.4f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
-                self.sensor_data.append(record)
-                self.plot_data_points.append((dt_object, value))
-                self.gui_update_queue.put(record)
-
-                threading.Thread(target=self.flash_led, args=(Constants.LED1_PIN,), daemon=True).start()
-                if new_level > 0:
-                    threading.Thread(target=self.flash_led, args=(Constants.LED2_PIN,), daemon=True).start()
-
-                if self.publish_topic:
-                    payload_out_str = f"{name},{value},{status},{ts}"
-                    self.client.publish(self.publish_topic, payload_out_str)
-            else:
-                logger.info(f"Nhận được tin nhắn không phải dữ liệu từ topic '{msg.topic}', bỏ qua.")
-
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
-            logger.error(f"Lỗi xử lý message: {e} | Payload: {msg.payload.decode('utf-8', errors='ignore')}")
-
-    def start_long_term_analyzer(self):
-        if self._long_term_analyzer_thread and self._long_term_analyzer_thread.is_alive():
-            return
-        
-        logger.info("Khởi động Bộ phân tích Dịch chuyển Dài hạn.")
-        self._long_term_analyzer_thread = threading.Thread(
-            target=self._run_long_term_analysis,
-            daemon=True,
-            name="LongTermAnalyzer"
-        )
-        self._long_term_analyzer_thread.start()
-    def haversine_3d(self, p1, p2):
-        R = 6371000  # Bán kính Trái Đất (mét)
-        lat1, lon1, h1 = p1["lat"], p1["lon"], p1["h"]
-        lat2, lon2, h2 = p2["lat"], p2["lon"], p2["h"]
-        
-        # Chuyển đổi sang radians
-        lat1_rad, lon1_rad = math.radians(lat1), math.radians(lon1)
-        lat2_rad, lon2_rad = math.radians(lat2), math.radians(lon2)
-        
-        dlat = lat2_rad - lat1_rad
-        dlon = lon2_rad - lon1_rad
-        
-        # Công thức Haversine cho khoảng cách ngang
-        a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        dist_2d = R * c
-        
-        # Tính khoảng cách 3D bằng định lý Pytago
-        dist_3d = math.sqrt(dist_2d**2 + (h2 - h1)**2)
-        return dist_3d
-
-    def _run_long_term_analysis(self):
-        while not self.exiting:
-            # Chạy phân tích mỗi 5 phút
-            time.sleep(300) 
-            
-            # Sao chép dữ liệu để tránh xung đột khi luồng khác đang ghi
-            history_copy = list(self.position_history_for_long_term)
-            if len(history_copy) < 2:
-                continue
-
-            now = time.time()
-            
-            # Định nghĩa các khoảng thời gian (tính bằng giây)
-            periods = {
-                "hour": 3600,
-                "day": 86400,
-                "week": 7 * 86400
-            }
-
-            latest_point = history_copy[-1]
-            avg_velocities = {}
-
-            for period_name, duration_seconds in periods.items():
-                target_timestamp = now - duration_seconds
-                
-                # Tìm điểm tham chiếu ở đầu khoảng thời gian
-                reference_point = next((p for p in history_copy if p["ts"] >= target_timestamp), None)
-                
-                if reference_point and latest_point["ts"] > reference_point["ts"]:
-                    # Tính tổng dịch chuyển (m)
-                    displacement_m = self.haversine_3d(latest_point, reference_point)
-                    
-                    # Tính tổng thời gian trôi qua (s)
-                    time_elapsed_s = latest_point["ts"] - reference_point["ts"]
-
-                    # Tính vận tốc trung bình (m/s)
-                    avg_velocity_mps = displacement_m / time_elapsed_s if time_elapsed_s > 0 else 0
-                    
-                    # Chuyển đổi sang đơn vị mm/giờ để hiển thị
-                    avg_velocity_mmph = avg_velocity_mps * 3600 * 1000
-                    
-                    avg_velocities[period_name] = {"value": avg_velocity_mmph, "unit": "mm/giờ"}
-                else:
-                    # Không có đủ dữ liệu cho khoảng thời gian này
-                    avg_velocities[period_name] = {"value": 0, "unit": "mm/giờ"}
-            
-            # Cập nhật biến của class để giao diện có thể đọc
-            self.long_term_avg_velocities = avg_velocities
-            logger.info(f"Đã cập nhật vận tốc TB dài hạn: {self.long_term_avg_velocities}")
 
     def setup_audio_mixer(self):
-        try:
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
-            self.mixer_initialized = True
-            self.load_water_sounds()
-        except Exception as e:
-            logger.error(f"Không thể khởi tạo pygame mixer: {e}")
-            self.mixer_initialized = False
+        if not IS_RASPBERRY_PI: return
+        try: pygame.mixer.init(frequency=24000, size=-16, channels=1, buffer=4096); self.mixer_initialized = True; logger.info("Pygame mixer đã khởi tạo.")
+        except Exception as e: logger.error(f"Không thể khởi tạo pygame mixer: {e}")
 
-        
-    def _load_water_sound(self, filename):
-        path = os.path.join(self.water_sound_directory, filename)
-        if os.path.exists(path): 
-            return pygame.mixer.Sound(path)
-        logger.warning(f"Không tìm thấy file âm thanh nước: {path}")
-        return None
-        
-    def reload_water_sounds(self):
+    def speak(self, text_to_speak):
+        if not self.mixer_initialized or not text_to_speak: return
         try:
-            self.siren_sound = self._load_water_sound("coi1.mp3")
-            self.warning_sound = self._load_water_sound("warning.mp3")
-            self.critical_sound = self._load_water_sound("danger.mp3")
-            self.decreasing_sound = self._load_water_sound("decrease.mp3")
-            self.safe_sound_1 = self._load_water_sound("safe.mp3")
-            self.safe_sound_2 = self._load_water_sound("safe2.mp3")
-            logger.info(f"Đã tải lại âm thanh nước từ: {self.water_sound_directory}")
-        except Exception as e:
-            logger.error(f"Lỗi khi tải lại âm thanh nước: {e}")
-
-    def update_and_reconnect(self, settings: dict):
-        self.broker, self.port = settings['broker'], int(settings['port'])
-        self.username, self.password = settings['username'], settings['password']
-        self.publish_topic = settings['publish']
-        water_topics_str = settings.get('water_topics', '')
-        gnss_topics_str = settings.get('gnss_topics', '')
-    
-        self.water_topics = [t.strip() for t in water_topics_str.splitlines() if t.strip()]
-        self.gnss_topics = [t.strip() for t in gnss_topics_str.splitlines() if t.strip()]
-        self.subscribe_topics = self.water_topics + self.gnss_topics
-        self.warning_threshold = float(settings['warning_threshold'])
-        self.critical_threshold = float(settings['critical_threshold'])
-        self.save_config()
-        if self.listening:
-            self.toggle_off()
-            time.sleep(1)
-            self.toggle_on()
-    
-    def load_config(self):
-        if not os.path.exists(Constants.CONFIG_FILE):
-            logger.warning(f"File cấu hình '{Constants.CONFIG_FILE}' không tồn tại.")
-            self._reset_gnss_to_default()
-            return
-        try:
-            self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
-            if "MQTT" in self.config:
-                mqtt_cfg = self.config['MQTT']
-                self.broker = mqtt_cfg.get("broker", self.broker)
-                self.port = mqtt_cfg.getint("port", self.port)
-                self.username = mqtt_cfg.get("username", self.username)
-                self.password = mqtt_cfg.get("password", self.password)
-                self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]
-                self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
-                self.subscribe_topics = self.water_topics + self.gnss_topics
-                self.publish_topic = mqtt_cfg.get("publish", self.publish_topic)
-            if "Settings" in self.config:
-                settings_cfg = self.config['Settings']
-                self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
-                self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
-            if "GNSS_Classification" in self.config and self.config['GNSS_Classification']:
-                self._load_gnss_from_config(self.config["GNSS_Classification"])
-            else:
-                self._reset_gnss_to_default()
-        
-        # Thêm phần load cấu hình âm thanh
-            if "WaterSounds" in self.config:
-                self.water_sound_directory = self.config["WaterSounds"].get("directory", Constants.WATER_SOUNDS_DIR)
-            if "GNSSSounds" in self.config:
-                self.gnss_sound_directory = self.config["GNSSSounds"].get("directory", Constants.GNSS_SOUNDS_DIR)
-        except Exception as e:
-            logger.error(f"Lỗi tải cấu hình: {e}")
-
-    def _load_gnss_from_config(self, gnss_cfg):
-        items_dict = {}
-        for key, value in gnss_cfg.items():
-            if key.startswith('item_'):
-                parts = key.split('_', 2)
-                if len(parts) == 3:
-                    item_index, attr_name = int(parts[1]), parts[2]
-                    if item_index not in items_dict:
-                        items_dict[item_index] = {}
-                    if attr_name == 'name':
-                        items_dict[item_index][attr_name] = value
-                    else:
-                        try:
-                            items_dict[item_index][attr_name] = float(value) if value else ""
-                        except ValueError:
-                            items_dict[item_index][attr_name] = value
-        if items_dict:
-            self.gnss_speed_classification = [items_dict[i] for i in sorted(items_dict.keys())]
-    
-    def save_config(self):
-        try:
-            self.config['MQTT'] = {
-                'broker': self.broker, 'port': self.port, 'username': self.username,
-                'password': self.password,
-                'water_sub_topic': "\n".join(self.water_topics),
-                'gnss_sub_topic': "\n".join(self.gnss_topics),
-                'publish': self.publish_topic
-            }
-            self.config['Settings'] = {
-                'warning_threshold': self.warning_threshold,
-                'critical_threshold': self.critical_threshold
-            }
-            self.config['GNSS_Classification'] = {}
-            for i, item in enumerate(self.gnss_speed_classification):
-                for key, value in item.items():
-                    self.config['GNSS_Classification'][f'item_{i}_{key}'] = str(value)
-        
-        # Thêm phần lưu cấu hình âm thanh
-            self.config['WaterSounds'] = {'directory': self.water_sound_directory}
-            self.config['GNSSSounds'] = {'directory': self.gnss_sound_directory}
-        
-            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                self.config.write(f)
-            logger.info("Đã lưu cấu hình.")
-        except Exception as e:
-            logger.error(f"Lỗi lưu cấu hình: {e}")
-
-    def cleanup_on_exit(self):
-        if self.exiting: return
-        logger.info("Bắt đầu quá trình dọn dẹp để thoát...")
-        self.exiting = True
-        
-        self.alert_manager.stop_all_alerts()
-        self.stop_shifting_process()
-        
-        try:
-            if self.client.is_connected():
-                self.client.loop_stop(force=True)
-                self.client.disconnect()
-        except Exception: pass
+            logger.info(f"Đang tạo giọng nói cho: '{text_to_speak}'")
+            tts = gTTS(text=text_to_speak, lang='vi')
+            with io.BytesIO() as fp: tts.write_to_fp(fp); fp.seek(0); pygame.mixer.music.load(fp); pygame.mixer.music.play()
+            while pygame.mixer.music.get_busy(): time.sleep(0.1)
+        except Exception as e: logger.error(f"Lỗi Text-to-Speech: {e}")
             
-        self.save_session_data(silent=True)
-        
-        GPIO.cleanup()
-        logger.info("Backend đã dừng.")
-
-    def setup_gpio(self):
-        try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setwarnings(False)
-            GPIO.setup(Constants.LED1_PIN, GPIO.OUT, initial=GPIO.LOW)
-            GPIO.setup(Constants.LED2_PIN, GPIO.OUT, initial=GPIO.LOW)
-            logger.info("GPIO setup successful.")
-        except Exception as e:
-            logger.error(f"Lỗi khi cài đặt GPIO: {e}. Vui lòng chạy với quyền sudo.")
-
-    def flash_led(self, pin, duration=0.3):
-        try:
-            GPIO.output(pin, GPIO.HIGH)
-            time.sleep(duration)
-            GPIO.output(pin, GPIO.LOW)
-        except Exception as e:
-            logger.error(f"Lỗi nháy LED trên pin {pin}: {e}")
-
-    def on_connect(self, client, userdata, flags, rc, properties):
-        if self.exiting: return
-        if rc == 0:
-            logger.info("MQTT Connected successfully.")
-            self.status_text, self.status_color = "Trạng thái: TỰ ĐỘNG", "green"
-            if self.subscribe_topics:
-                for t in self.subscribe_topics:
-                    client.subscribe(t)
-                    if t in self.gnss_topics:
-                        logger.info(f"Subscribed to RAW GNSS Topic (for forwarding): {t}")
-                    else: 
-                        logger.info(f"Subscribed: {t}")
-            if not self.subscribe_topics:
-                logger.warning("Không có topic nào để subscribe, sẽ không nhận dữ liệu.")
-                self.status_text = "Trạng thái: TỰ ĐỘNG (Không có topic)"
-        else:
-            logger.error(f"Failed to connect to MQTT, return code {rc}")
-            self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
-            self.listening = False
-
-    def on_disconnect(self, client, userdata, rc):
-        if not self.exiting and self.listening:
-            logger.warning("Mất kết nối MQTT...")
-            self.status_text, self.status_color = "Trạng thái: MẤT KẾT NỐI", "orange"
-
-    def get_gui_updates(self):
-        updates = []
-        while not self.gui_update_queue.empty():
+    def send_command_to_shifting(self, command_packet):
+        if self.shifting_process and self.shifting_process.poll() is None:
             try:
-                updates.append(self.gui_update_queue.get_nowait())
-            except queue.Empty:
-                break
-        return updates
-    
-    def safe_mqtt_connect(self):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                self.client.connect_async(self.broker, self.port, 60)
-                self.client.loop_start()
-                return True
-            except Exception as e:
-                logger.error(f"Kết nối MQTT lần thử {attempt + 1}/{max_retries} thất bại: {e}")
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    logger.info(f"Thử lại sau {wait_time} giây...")
-                    time.sleep(wait_time)
+                if self.shifting_process.stdin.writable():
+                    self.shifting_process.stdin.write(json.dumps(command_packet) + '\n'); self.shifting_process.stdin.flush()
+                    logger.info(f"Đã gửi lệnh '{command_packet.get('command')}' cho shifting.py."); return True
+            except Exception as e: logger.error(f"Lỗi khi gửi lệnh: {e}")
         return False
 
-    def toggle_on(self):
-        if self.listening: return
-        self.listening = True
-        self.status_text, self.status_color = "Trạng thái: ĐANG KẾT NỐI...", "orange"
-        
-        if not self.broker:
-            self.listening = False
-            self.status_text, self.status_color = "Trạng thái: THỦ CÔNG (Lỗi Broker)", "red"
-            logger.error("Không thể bật, chưa cấu hình MQTT Broker.")
-            return
-
-        self.client.username_pw_set(self.username, self.password)
-        logger.info(f"Đang kết nối tới MQTT broker: {self.broker}:{self.port}...")
-        
-        if not self.safe_mqtt_connect():
-            self.listening = False
-            self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
-            logger.error("Không thể kết nối MQTT sau nhiều lần thử.")
-            return
-        if self.gnss_topics:
-            self.start_shifting_process()
-
-    def toggle_off(self):
-        if not self.listening: return
-        self.listening = False
-        self.stop_shifting_process()
+    def update_and_save_all_settings(self, settings: dict):
         try:
-            self.client.loop_stop()
-            self.client.disconnect()
-            logger.info("Đã ngắt kết nối MQTT.")
-        except Exception: pass
-        self.status_text, self.status_color = "Trạng thái: THỦ CÔNG", "red"
-
-    def check_leds(self):
-        if self.listening:
-            logger.warning("Không thể kiểm tra LED ở chế độ TỰ ĐỘNG.")
+        # Cập nhật các thuộc tính Backend
+            self.broker = settings.get('broker', self.broker)
+            self.port = int(settings.get('port', self.port))
+            self.username = settings.get('username', self.username)
+            self.password = settings.get('password', self.password)
+            self.publish_topic = settings.get('publish_topic', self.publish_topic)
+        
+            self.water_topics = settings.get('water_topics', self.water_topics)
+            self.gnss_topics = settings.get('gnss_topics', self.gnss_topics)
+        
+            self.warning_threshold = float(settings.get('warning_threshold', self.warning_threshold))
+            self.critical_threshold = float(settings.get('critical_threshold', self.critical_threshold))
+        
+            self.velocity_classification_table = settings.get('velocity_classification_table', self.velocity_classification_table)
+        
+        # Lưu cấu hình
+            success = self.save_config()
+        
+            if success:
+                logger.info("Đã cập nhật và lưu cài đặt thành công.")
+            
+            # Khởi động lại shifting process nếu đang chạy
+                if self.listening:
+                    logger.info("Phát hiện thay đổi cấu hình, đang khởi động lại shifting.py...")
+                    self.stop_shifting_process()
+                    time.sleep(1)
+                    self.start_shifting_process()
+            else:
+                logger.error("Lỗi khi lưu cấu hình!")
+            
+            return success
+        except Exception as e:
+            logger.error(f"Lỗi trong update_and_save_all_settings: {e}")
             return False
-        threading.Thread(target=self._run_led_check, daemon=True).start()
+
+    def save_config(self):
+        try:
+        # Đảm bảo các section tồn tại
+            if 'MQTT' not in self.config:
+                self.config.add_section('MQTT')
+            if 'Settings' not in self.config:
+                self.config.add_section('Settings')
+            if 'VelocityClassification' not in self.config:
+                self.config.add_section('VelocityClassification')
+            
+        # Cập nhật section MQTT
+            self.config['MQTT'] = {
+                'broker': str(self.broker),
+                'port': str(self.port), 
+                'username': str(self.username),
+                'password': str(self.password),
+                'publish_topic': str(self.publish_topic),
+                'water_sub_topic': "\n".join(self.water_topics),
+                'gnss_sub_topic': "\n".join(self.gnss_topics)
+            }
+        
+        # Cập nhật section Settings
+            self.config['Settings'] = {
+                'warning_threshold': str(self.warning_threshold),
+                'critical_threshold': str(self.critical_threshold)
+            }
+        
+        # Cập nhật section VelocityClassification
+        # Xóa các key cũ trước
+            self.config.remove_section('VelocityClassification')
+            self.config.add_section('VelocityClassification')
+        
+            for i, item in enumerate(self.velocity_classification_table):
+                key = f'level_{i}'
+                value = f"{item['speed_class']},{item['name']},{item['threshold_mmps']}"
+                self.config['VelocityClassification'][key] = value
+        
+        # Ghi vào file
+            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                self.config.write(f)
+            
+            logger.info("Đã lưu cấu hình thành công.")
+            return True
+        
+        except Exception as e:
+            logger.error(f"Lỗi khi lưu cấu hình: {e}")
+            return False
+
+    def load_config(self):
+        try:
+        # Khởi tạo ConfigParser nếu chưa có
+            if not hasattr(self, 'config') or self.config is None:
+                self.config = configparser.ConfigParser()
+            
+            if not os.path.exists(Constants.CONFIG_FILE): 
+                logger.info("File config không tồn tại, tạo cấu hình mặc định...")
+            # Bảng phân loại tốc độ theo Cruden (1996) và IUGS
+                self.velocity_classification_table = [
+                    {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},
+                    {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},
+                    {"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},
+                    {"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},
+                    {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},
+                    {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},
+                    {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}
+                ]
+                self.save_config()
+                return
+        
+        # Đọc file config
+            self.config.read(Constants.CONFIG_FILE, encoding='utf-8')
+        
+        # Load MQTT settings
+            if 'MQTT' in self.config:
+                mqtt_cfg = self.config['MQTT']
+                self.broker = mqtt_cfg.get("broker", Constants.DEFAULT_BROKER)
+                self.port = mqtt_cfg.getint("port", Constants.DEFAULT_PORT)
+                self.username = mqtt_cfg.get("username", Constants.DEFAULT_USER)
+                self.password = mqtt_cfg.get("password", Constants.DEFAULT_PASS)
+                self.publish_topic = mqtt_cfg.get("publish_topic", "")
+                self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]
+                self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
+        
+        # Load Settings
+            if 'Settings' in self.config:
+                settings_cfg = self.config['Settings']
+                self.warning_threshold = settings_cfg.getfloat("warning_threshold", Constants.DEFAULT_WARN_THRESHOLD)
+                self.critical_threshold = settings_cfg.getfloat("critical_threshold", Constants.DEFAULT_CRIT_THRESHOLD)
+        
+        # Load Velocity Classification
+            if "VelocityClassification" in self.config and self.config["VelocityClassification"]:
+                self.velocity_classification_table = []
+                for key in sorted(self.config["VelocityClassification"].keys()):
+                    value = self.config["VelocityClassification"][key]
+                    parts = value.split(',')
+                    if len(parts) >= 3:
+                        self.velocity_classification_table.append({
+                            "speed_class": int(parts[0]), 
+                            "name": parts[1], 
+                            "threshold_mmps": float(parts[2])
+                        })
+            else:
+            # Nếu không có trong config, sử dụng bảng mặc định Cruden 1996 & IUGS
+                logger.info("Sử dụng bảng phân loại mặc định Cruden 1996 & IUGS")
+                self.velocity_classification_table = [
+                    {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},
+                    {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},
+                    {"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},
+                    {"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},
+                    {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},
+                    {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},
+                    {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}
+                ]
+            
+            logger.info("Đã tải cấu hình thành công.")
+        
+        except Exception as e:
+            logger.error(f"Lỗi tải cấu hình: {e}")
+        # Khởi tạo giá trị mặc định nếu có lỗi
+            self.config = configparser.ConfigParser()
+
+    def update_velocity_classification_to_cruden_iugs(self):
+        logger.info("Đang cập nhật bảng phân loại tốc độ theo Cruden 1996 & IUGS...")
+    
+        self.velocity_classification_table = [
+            {"speed_class": 7, "name": "Extremely Rapid", "threshold_mmps": 5000.0},      # > 5 m/s
+            {"speed_class": 6, "name": "Very Rapid", "threshold_mmps": 50.0},            # 50 mm/s - 5 m/s  
+            {"speed_class": 5, "name": "Rapid", "threshold_mmps": 0.5},                  # 0.5 mm/s - 50 mm/s
+            {"speed_class": 4, "name": "Moderate", "threshold_mmps": 0.016},             # 1.4 mm/day - 0.5 mm/s
+            {"speed_class": 3, "name": "Slow", "threshold_mmps": 0.0005},               # 0.044 mm/day - 1.4 mm/day
+            {"speed_class": 2, "name": "Very Slow", "threshold_mmps": 0.000005},        # 0.44 mm/year - 0.044 mm/day
+            {"speed_class": 1, "name": "Extremely Slow", "threshold_mmps": 0.0}         # < 0.44 mm/year
+        ]
+    
+    # Lưu cấu hình ngay lập tức
+        self.save_config()
+    
+    # Nếu đang chạy tự động, khởi động lại shifting process
+        if self.listening:
+            logger.info("Đang khởi động lại shifting process với bảng phân loại mới...")
+            self.stop_shifting_process()
+            time.sleep(1)
+            self.start_shifting_process()
+    
+        logger.info("Đã cập nhật thành công bảng phân loại tốc độ Cruden 1996 & IUGS")
         return True
 
-    def _run_led_check(self):
-        logger.info("Kiểm tra LED...")
-        self.flash_led(Constants.LED1_PIN, duration=0.5)
-        time.sleep(0.1)
-        self.flash_led(Constants.LED2_PIN, duration=0.5)
+    def cleanup_on_exit(self):
+        if self.exiting: return; self.exiting = True; logger.info("Bắt đầu dọn dẹp để thoát..."); self.stop_shifting_process()
+        if IS_RASPBERRY_PI: GPIO.cleanup(); logger.info("Backend đã dừng.")
 
-    def auto_clear_scheduler(self):
-        while not self.exiting:
-            now = datetime.now()
-            if now.hour == 0 and now.minute == 0:
-                logger.info("Đã đến 00:00, tự động xóa dữ liệu...")
-                self.clear_all_data()
-                time.sleep(61)
-            else:
-                time.sleep(30)
+    def setup_gpio(self):
+        if not IS_RASPBERRY_PI: logger.warning("Bỏ qua cài đặt GPIO."); return
+        try: GPIO.setmode(GPIO.BCM); GPIO.setwarnings(False); GPIO.setup(Constants.LED1_PIN, GPIO.OUT, initial=GPIO.LOW); GPIO.setup(Constants.LED2_PIN, GPIO.OUT, initial=GPIO.LOW); logger.info("GPIO setup successful.")
+        except Exception as e: logger.error(f"Lỗi cài đặt GPIO: {e}.")
+
+    def toggle_on(self):
+        if self.listening: return; self.listening = True; self.status_text, self.status_color = "ĐANG KHỞI ĐỘNG...", "warning"; self.start_shifting_process()
+
+    def toggle_off(self):
+        if not self.listening: return; self.listening = False; self.stop_shifting_process(); self.status_text, self.status_color = "THỦ CÔNG", "danger"
+
+    def check_leds(self):
+        if not IS_RASPBERRY_PI: logger.warning("Không phải Raspberry Pi."); return True
+        if self.listening: logger.warning("Không thể kiểm tra LED ở chế độ TỰ ĐỘNG."); return False
+        threading.Thread(target=self._run_led_check, daemon=True).start(); return True
+
+    def _run_led_check(self): logger.info("Kiểm tra LED..."); self.flash_led(Constants.LED1_PIN, 0.5); time.sleep(0.1); self.flash_led(Constants.LED2_PIN, 0.5)
 
     def clear_all_data(self):
-        self.sensor_data.clear()
-        self.plot_data_points.clear()
-        self.gui_update_queue.put(Constants.DATA_CLEAR_SIGNAL)
-        logger.info("Đã xóa dữ liệu nền.")
+        self.latest_full_report = {}; self.displacement_history.clear(); self.water_level_history.clear(); self.anomaly_score_history.clear(); self.threat_score_history.clear()
+        self.gui_update_queue.put((Constants.DATA_CLEAR_SIGNAL, None)); logger.info("Đã xóa dữ liệu nền và lịch sử.")
 
-    def save_session_data(self, silent=False):
-        if not silent: logger.info("Đang lưu trạng thái hiện tại vào file...")
-        try:
-            plot_data_serializable = [(dt.isoformat(), val) for dt, val in self.plot_data_points]
-            session = {"sensor_data": list(self.sensor_data), "plot_data_points": plot_data_serializable}
-            with open(Constants.SESSION_FILE, "w") as f: json.dump(session, f)
-            if not silent: logger.info(f"Đã lưu trạng thái vào {Constants.SESSION_FILE}")
-        except Exception as e:
-            logger.error(f"Lỗi khi lưu trạng thái: {e}")
-
-    def load_session_data(self):
-        if not os.path.exists(Constants.SESSION_FILE): return
-        logger.info(f"Tìm thấy file trạng thái {Constants.SESSION_FILE}, đang tải lại dữ liệu...")
-        try:
-            with open(Constants.SESSION_FILE, "r") as f: session = json.load(f)
-            self.sensor_data.extend(session.get("sensor_data", []))
-            plot_data_serializable = session.get("plot_data_points", [])
-            self.plot_data_points.clear()
-            for dt_str, val in plot_data_serializable:
-                self.plot_data_points.append((datetime.fromisoformat(dt_str), val))
-            
-            for record in self.sensor_data: self.gui_update_queue.put(record)
-            logger.info("Đã tải lại dữ liệu thành công.")
-        except Exception as e:
-            logger.error(f"Lỗi khi tải trạng thái: {e}")
-        finally:
-            if os.path.exists(Constants.SESSION_FILE):
-                os.remove(Constants.SESSION_FILE)
-
+    def get_gui_updates(self):
+        updates = [];
+        while not self.gui_update_queue.empty():
+            try: updates.append(self.gui_update_queue.get_nowait())
+            except queue.Empty: break
+        return updates
 
 # ==============================================================================
-# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI - KHÔI PHỤC ĐẦY ĐỦ)
+# LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
 # ==============================================================================
 class AppGUI:
     def __init__(self, root: tk.Toplevel, backend: Backend, on_close_callback):
-        self.root = root
-        self.backend = backend
-        self.on_close_callback = on_close_callback
-        self.root.title("Giao diện Cảm biến & Điều khiển LED")
-        self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
-        
-        self.chart_window = None
-        self.settings_window = None
-        self.classification_win = None # Cửa sổ cho bảng phân loại
-        
-        self.warning_threshold_var = tk.StringVar()
-        self.critical_threshold_var = tk.StringVar()
-
-        # Khởi tạo các biến Boolean cho Checkbox của GNSS
-        self.gnss_second_var = tk.BooleanVar()
-        self.gnss_minute_var = tk.BooleanVar()
-        self.gnss_hour_var = tk.BooleanVar()
-        self.gnss_day_var = tk.BooleanVar()
-        self.gnss_month_var = tk.BooleanVar()
-
-        self.water_sound_dir_var = tk.StringVar(value=self.backend.water_sound_directory)
-        self.gnss_sound_dir_var = tk.StringVar(value=self.backend.gnss_sound_directory)
-
-        self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
-        
-        self.create_widgets()
-        self.load_initial_data()
+        self.root = root; self.backend = backend; self.on_close_callback = on_close_callback
+        self.root.title("ASTCS - Bảng điều khiển Tình báo"); self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
+        self.interactive_dialog_open = False
+        self.last_status_label_style = ""
+        self.last_final_status_config = {"text": "", "color": ""}
+        self.create_widgets(); self.load_initial_data()
         self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
 
-    def browse_directory(self, var):
-        dir_path = filedialog.askdirectory(title="Chọn thư mục âm thanh")
-        if dir_path:
-            var.set(dir_path)
-
-    def reload_water_sounds(self):
-        self.backend.water_sound_directory = self.water_sound_dir_var.get().strip()
-        self.backend.reload_water_sounds()
-        messagebox.showinfo("Thành công", f"Đã tải lại âm thanh nước từ:\n{self.backend.water_sound_directory}", 
-                           parent=self.settings_window)    
-
     def create_widgets(self):
-        main = ttk.Frame(self.root, padding=10)
-        main.pack(fill="both", expand=True)
-        main.grid_columnconfigure(1, weight=1)
-        main.grid_columnconfigure(0, weight=0)
-        main.grid_rowconfigure(0, weight=1)
-        self.create_left_panel(main)
-        self.create_right_panel(main)
+        main = ttk.Frame(self.root, padding=10); main.pack(fill="both", expand=True)
+        main.grid_columnconfigure(1, weight=1); main.grid_columnconfigure(0, weight=0); main.grid_rowconfigure(0, weight=1)
+        self.create_left_panel(main); self.create_right_panel(main)
 
     def create_left_panel(self, parent):
-        left = ttk.LabelFrame(parent, text="Cài đặt MQTT", padding=10)
+        left = ttk.LabelFrame(parent, text="Cấu hình MQTT & Topics", padding=10)
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 15))
-
-        def add_labeled_entry(frame, label, row, show=None):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=3)
-            entry = ttk.Entry(frame, show=show)
-            entry.grid(row=row, column=1, sticky="ew", pady=3, columnspan=2)
-            return entry
-
-        self.broker_entry = add_labeled_entry(left, "MQTT Broker:", 0)
-        self.port_entry = add_labeled_entry(left, "Port:", 1)
-        self.user_entry = add_labeled_entry(left, "Username:", 2)
-        self.pass_entry = add_labeled_entry(left, "Password:", 3, show="*")
-        ttk.Button(left, text="👁", command=self.toggle_pass, width=2, bootstyle="light").grid(row=3, column=2, sticky="e")
-        self.pub_entry = add_labeled_entry(left, "Publish Topic:", 4)
-
-        ttk.Label(left, text="Water Sub Topic:").grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.water_topic_entry = tk.Text(left, height=4, width=35, relief="solid", borderwidth=1)
-        self.water_topic_entry.grid(row=6, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
-
-        ttk.Label(left, text="GNSS Sub Topic:").grid(row=7, column=0, columnspan=3, sticky="w", pady=(10, 2))
-        self.gnss_topic_entry = tk.Text(left, height=4, width=35, relief="solid", borderwidth=1)
-        self.gnss_topic_entry.grid(row=8, column=0, columnspan=3, pady=(0, 5), sticky="nsew")
-
-        ttk.Button(left, text="Cài đặt Nâng cao", command=self.open_settings_window, bootstyle="secondary").grid(row=9, column=0, columnspan=3, sticky="ew", pady=(10, 5))
-        ttk.Button(left, text="Lưu & Áp dụng", command=lambda: self.apply_and_save_config(), bootstyle="primary").grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5,0))
-        left.grid_rowconfigure(6, weight=1)
-        left.grid_rowconfigure(8, weight=1)
-
-
-    def periodic_update(self):
-        # Kiểm tra nếu cửa sổ chính đã bị đóng
-        if not self.root.winfo_exists(): 
-            return
-        
-        # Cập nhật label trạng thái chính (ví dụ: TỰ ĐỘNG, MẤT KẾT NỐI...)
-        self.update_status_label()
-
     
-        # Lấy tất cả các tin nhắn mới từ backend
-        new_updates = self.backend.get_gui_updates()
-
-        for item in new_updates:
-            if isinstance(item, dict) and item.get("type") == "collection_status":
-                collected = item['collected']
-                total = item['total']
-                
-                # Lấy thời gian hiện tại và định dạng cho giống với logger
-                timestamp_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]
-                
-                # Tạo chuỗi thông báo, thêm khoảng trắng ở cuối để đảm bảo ghi đè hoàn toàn dòng cũ
-                progress_message = f"{timestamp_str} - INFO - [SHIFTING] Đang thu thập dữ liệu GNSS... ({collected}/{total})   "
-                
-                # Dùng print với ký tự '\r' để quay về đầu dòng và end='' để không tạo dòng mới
-                print(f"\r{progress_message}", end="", flush=True)
-                
-                # Nếu quá trình thu thập đã hoàn tất, in một dòng trống để các log sau
-                # không ghi đè lên dòng tiến độ cuối cùng.
-                if collected >= total:
-                    print()
-                    
-                continue # Bỏ qua các xử lý khác và chuyển sang item tiếp theo
-            
-            # Xử lý tín hiệu yêu cầu xóa dữ liệu
-            if item == Constants.DATA_CLEAR_SIGNAL:
-                self.sheet.set_sheet_data(data=[])
-                if self.chart_window and self.chart_window.winfo_exists(): 
-                    self.chart_window.clear_chart_data()
-                logger.info("GUI đã nhận tín hiệu và xóa bảng.")
-                continue
-
-            # Xử lý các bản ghi dữ liệu để hiển thị lên bảng
-            record = None
-            # Xử lý báo cáo chi tiết từ shifting.py
-            if isinstance(item, dict) and item.get("type") == "ultimate_analysis_report":
-                record = self.backend.handle_gnss_report(item)
-            # Xử lý báo cáo từ các cảm biến khác (ví dụ: cảm biến nước)
-            elif isinstance(item, tuple):
-                record = item
-        
-            # Nếu có một bản ghi hợp lệ, cập nhật lên bảng hiển thị
-            if record:
-                try:
-                    GUI_DISPLAY_CAP = 2000 # Giới hạn hiển thị tối đa 2000 bản ghi
-                    all_backend_data = list(self.backend.sensor_data)
-                    data_to_display = all_backend_data[-GUI_DISPLAY_CAP:]
-                    
-                    self.sheet.set_sheet_data(data=data_to_display)
-                    self.sheet.dehighlight_all()
-                    
-                    last_row_index = self.sheet.get_total_rows() - 1
-            
-                    if last_row_index >= 0:
-                        self.sheet.see(row=last_row_index) # Tự động cuộn đến dòng cuối
-                        status = record[2]
-                
-                        # Tô màu cho dòng dựa trên trạng thái
-                        if "nhanh" in status.lower() or "nguy cấp" in status.lower() or "NGUY HIEM" in status.upper(): 
-                            highlight_color = "#F8D7DA" # Màu đỏ nhạt
-                        elif "trung bình" in status.lower() or "CANH BAO" in status.upper(): 
-                            highlight_color = "#FFF3CD" # Màu vàng nhạt
-                        elif "an toàn" in status.lower() or "AN TOAN" in status.upper():
-                            highlight_color = "#D4EDDA" # Màu xanh lá nhạt
-                        else: 
-                            highlight_color = "#E9ECEF" # Màu xám nhạt cho các trạng thái còn lại
-                    
-                        self.sheet.highlight_rows([last_row_index], bg=highlight_color, fg="black")
-                except Exception as e:
-                    logger.error(f"Lỗi khi chèn/cập nhật dòng trong tksheet: {e}")
-
-        # Cập nhật biểu đồ nếu nó đang được mở
-        if self.chart_window and self.chart_window.winfo_exists(): 
-            self.chart_window.update_plot()
+        # Cấu hình grid cho left frame
+        left.grid_columnconfigure(1, weight=1)
     
-        if hasattr(self, 'water_sound_dir_label'):
-            current_water_sound_dir = self.water_sound_dir_label.cget("text")
-            if current_water_sound_dir != self.backend.water_sound_directory:
-                self.water_sound_dir_label.config(text=self.backend.water_sound_directory)
-        # Lên lịch để chạy lại hàm này sau 250ms
-        self.root.after(250, self.periodic_update)
+        # Sử dụng grid cho tất cả widgets
+        self.broker_entry = self.add_labeled_entry(left, "Broker:", 0)
+        self.port_entry = self.add_labeled_entry(left, "Port:", 1)
+        self.user_entry = self.add_labeled_entry(left, "Username:", 2)
+        self.pass_entry = self.add_labeled_entry(left, "Password:", 3, show="*")
+    
+        # GNSS Topics
+        ttk.Label(left, text="GNSS Sub Topics:").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10,0))
+        self.gnss_topic_entry = tk.Text(left, height=5, width=35)
+        self.gnss_topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+    
+        # Water Topics
+        ttk.Label(left, text="Water Sub Topics:").grid(row=6, column=0, columnspan=2, sticky="w")
+        self.water_topic_entry = tk.Text(left, height=5, width=35)
+        self.water_topic_entry.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(0, 5))
+    
+        # Button frame for two buttons side by side
+        button_frame = ttk.Frame(left)
+        button_frame.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(10,0))
+        button_frame.grid_columnconfigure(0, weight=1)
+        button_frame.grid_columnconfigure(1, weight=1)
 
-    def on_close_window(self):
-        logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại.")
-        self.on_close_callback()
-        self.destroy_all_windows()
+        # Save Config Button (NEW)
+        ttk.Button(button_frame, text="💾 Lưu Cấu hình", command=self.save_main_config, bootstyle="success").grid(row=0, column=0, sticky="ew", padx=(0,5))
 
-    def exit_program_graceful(self):
-        if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
-            logger.info("Tự động lưu cấu hình hiện tại trước khi thoát...")
-            self.apply_and_save_config(show_message=False)
-            self.on_close_callback(shutdown=True)
+        # Advanced Settings Button
+        ttk.Button(button_frame, text="⚙️ Cài đặt Nâng cao", command=self.open_advanced_settings, bootstyle="secondary").grid(row=0, column=1, sticky="ew", padx=(5,0))
 
-    def destroy_all_windows(self):
-        if self.settings_window and self.settings_window.winfo_exists(): self.settings_window.destroy()
-        if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.destroy()
-        if self.classification_win and self.classification_win.winfo_exists(): self.classification_win.destroy()
-        if self.root and self.root.winfo_exists(): self.root.destroy()
-        
+    def add_labeled_entry(self, frame, label_text, row, **kwargs):
+        ttk.Label(frame, text=label_text).grid(row=row, column=0, sticky="w", pady=3, padx=5)
+        entry = ttk.Entry(frame, **kwargs); entry.grid(row=row, column=1, sticky="ew", pady=3, padx=5); frame.grid_columnconfigure(1, weight=1)
+        return entry
+
     def create_right_panel(self, parent):
-        right = ttk.Frame(parent)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.grid_rowconfigure(1, weight=1)
-        right.grid_columnconfigure(0, weight=1)
-        self.status_label = ttk.Label(right, text="", font=("Arial", 11, "bold"))
-        self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5))
-        sheet_frame = ttk.Frame(right)
-        sheet_frame.grid(row=1, column=0, sticky="nsew")
-        self.sheet = Sheet(sheet_frame, headers=["Tên", "Giá trị ", "Trạng thái", "Thời gian"], show_row_index=True)
-        self.sheet.pack(fill=tk.BOTH, expand=True)
-        self.sheet.disable_bindings("all")
-        self.sheet.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
+        right = ttk.Frame(parent); right.grid(row=0, column=1, sticky="nsew"); right.grid_rowconfigure(1, weight=1); right.grid_columnconfigure(0, weight=1)
+        self.status_label = ttk.Label(right, text="Khởi tạo...", font=("Arial", 11, "bold")); self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5), padx=5)
+        dashboard_frame = ttk.Frame(right); dashboard_frame.grid(row=1, column=0, sticky="nsew"); self.create_dashboard_widgets(dashboard_frame)
         self.create_control_panel(right)
 
+    def create_dashboard_widgets(self, parent):
+        parent.grid_columnconfigure(0, weight=1); parent.grid_columnconfigure(1, weight=2)
+        status_frame = ttk.LabelFrame(parent, text="TRẠNG THÁI HỆ THỐNG", padding=15); status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", pady=5, padx=5); status_frame.grid_columnconfigure(0, weight=1)
+        self.final_status_label = ttk.Label(status_frame, text="CHỜ DỮ LIỆU", font=("Helvetica", 28, "bold"), anchor="center")
+        self.final_status_label.grid(row=0, column=0, sticky="ew", pady=5) # <--- SỬA LỖI Ở ĐÂY
+        self.summary_text_label = ttk.Label(status_frame, text="Cấu hình và chuyển sang chế độ TỰ ĐỘNG để bắt đầu giám sát.", font=("Helvetica", 11), wraplength=700, justify="center"); self.summary_text_label.grid(row=1, column=0, sticky="ew", pady=(5,0))
+        primary_frame = ttk.LabelFrame(parent, text="Chỉ số Chính", padding=10); primary_frame.grid(row=1, column=0, sticky="nsew", pady=5, padx=5)
+        self.disp_label = ttk.Label(primary_frame, text="Dịch chuyển 3D: -- mm", font=("Arial", 12)); self.disp_label.pack(pady=5, anchor="w"); self.velo_label = ttk.Label(primary_frame, text="Vận tốc 3D: -- mm/s", font=("Arial", 12)); self.velo_label.pack(pady=5, anchor="w")
+        self.water_label = ttk.Label(primary_frame, text="Mực nước: -- m", font=("Arial", 12)); self.water_label.pack(pady=5, anchor="w"); self.water_roc_label = ttk.Label(primary_frame, text="Tốc độ nước: -- mm/phút", font=("Arial", 12)); self.water_roc_label.pack(pady=5, anchor="w")
+        ai_frame = ttk.LabelFrame(parent, text="Phân tích Tình báo", padding=10); ai_frame.grid(row=1, column=1, sticky="nsew", pady=5, padx=5)
+        self.threat_score_label = ttk.Label(ai_frame, text="Điểm Rủi ro: --", font=("Arial", 12)); self.threat_score_label.pack(pady=5, anchor="w"); self.anomaly_label = ttk.Label(ai_frame, text="Điểm Bất thường AI: --", font=("Arial", 12)); self.anomaly_label.pack(pady=5, anchor="w")
+        self.sentry_label = ttk.Label(ai_frame, text="Lính canh: --", font=("Arial", 12)); self.sentry_label.pack(pady=5, anchor="w"); self.velo_class_label = ttk.Label(ai_frame, text="Phân loại IUGS: --", font=("Arial", 12)); self.velo_class_label.pack(pady=5, anchor="w")
+
     def create_control_panel(self, parent_frame):
-        bottom_part = ttk.Frame(parent_frame)
-        bottom_part.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        ctrl = ttk.Frame(bottom_part)
-        ctrl.pack(side=tk.TOP, fill=tk.X, expand=True)
-        for i in range(5): ctrl.grid_columnconfigure(i, weight=1)
-        ttk.Button(ctrl, text="Tự động (ON)", command=self.backend.toggle_on, bootstyle="success").grid(row=0, column=0, padx=2, sticky="ew")
-        ttk.Button(ctrl, text="Thủ công (OFF)", command=self.backend.toggle_off, bootstyle="danger").grid(row=0, column=1, padx=2, sticky="ew")
-        self.save_csv_button = ttk.Button(ctrl, text="Lưu CSV", command=self.save_to_csv, bootstyle="info")
-        self.save_csv_button.grid(row=0, column=2, padx=2, sticky="ew")
-        ttk.Button(ctrl, text="Xóa Dữ Liệu", command=self.clear_table_gui, bootstyle="warning").grid(row=0, column=3, padx=2, sticky="ew")
-        ttk.Button(ctrl, text="Xem Biểu Đồ", command=self.show_chart_window, bootstyle="primary").grid(row=0, column=4, padx=2, sticky="ew")
-        led_panel = ttk.LabelFrame(bottom_part, text="Kiểm tra Thiết bị", padding=5)
-        led_panel.pack(side=tk.TOP, fill=tk.X, expand=True, pady=(10, 0))
-        led_panel.grid_columnconfigure(0, weight=3)
-        led_panel.grid_columnconfigure(1, weight=1)
-        ttk.Button(led_panel, text="Kiểm tra LED", command=self.on_check_led_click).grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        ttk.Button(led_panel, text="Thoát", command=self.exit_program_graceful, bootstyle="secondary-outline").grid(row=0, column=1, padx=5, pady=5, sticky="ew")
-        
+        bottom_part = ttk.Frame(parent_frame); bottom_part.grid(row=2, column=0, sticky="ew", pady=(10, 0), padx=5)
+        ctrl = ttk.Frame(bottom_part); ctrl.pack(side=tk.TOP, fill=tk.X, expand=True);
+        for i in range(4): ctrl.grid_columnconfigure(i, weight=1)
+        ttk.Button(ctrl, text="Tự động (ON)", command=self.backend.toggle_on, bootstyle="success").grid(row=0, column=0, padx=2, sticky="ew"); ttk.Button(ctrl, text="Thủ công (OFF)", command=self.backend.toggle_off, bootstyle="danger").grid(row=0, column=1, padx=2, sticky="ew")
+        ttk.Button(ctrl, text="Xóa Lịch sử", command=self.clear_gui_data, bootstyle="warning").grid(row=0, column=2, padx=2, sticky="ew"); ttk.Button(ctrl, text="Xem Biểu Đồ", command=self.show_chart_window, bootstyle="primary").grid(row=0, column=3, padx=2, sticky="ew")
+        led_panel = ttk.LabelFrame(bottom_part, text="Thiết bị & Hệ thống", padding=5); led_panel.pack(side=tk.TOP, fill=tk.X, expand=True, pady=(10, 0)); led_panel.grid_columnconfigure(0, weight=3); led_panel.grid_columnconfigure(1, weight=1)
+        ttk.Button(led_panel, text="Kiểm tra LED", command=self.on_check_led_click).grid(row=0, column=0, padx=5, pady=5, sticky="ew"); ttk.Button(led_panel, text="Thoát", command=self.exit_program_graceful, bootstyle="secondary-outline").grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+
+    def periodic_update(self):
+        if not self.root.winfo_exists(): return
+        self.update_status_label()
+        new_packets = self.backend.get_gui_updates()
+        full_report, latest_hb = None, None
+        for p_type, data in new_packets:
+            if p_type == "FULL_REPORT": full_report = data
+            elif p_type == "HEARTBEAT": latest_hb = data
+            elif p_type in ["REQUEST_FOR_CONFIRMATION"] and not self.interactive_dialog_open: self.handle_interactive_request(data)
+            elif p_type == "SYSTEM_NOTIFICATION": messagebox.showinfo(data['title'], data['message'], parent=self.root)
+            elif p_type == Constants.DATA_CLEAR_SIGNAL: self.reset_dashboard(); logger.info("GUI đã xóa hiển thị.")
+        if full_report: self.process_full_report(full_report)
+        elif latest_hb: self.process_heartbeat(latest_hb)
+        self.root.after(250, self.periodic_update)
+
+    def process_full_report(self, report):
+        self.backend.latest_full_report = report; ts = datetime.fromtimestamp(report.get('timestamp', time.time()))
+        assessment = report.get('final_assessment', {}); status_code = assessment.get('status_code', 'UNKNOWN'); summary = assessment.get('summary_text', '...'); threat_score = assessment.get('overall_threat_score', 0)
+        primary = report.get('primary_state', {}); disp = primary.get('displacement_3d_mm', 0); velo = primary.get('displacement_velocity_mmps', 0); water = primary.get('water_level_m', 0); water_roc = primary.get('water_level_roc_mm_per_min', 0)
+        context = report.get('contextual_analysis', {}); sentry_reason = context.get('sentry_reason', 'N/A'); ai = report.get('ai_analysis', {}); anomaly_score = ai.get('anomaly_score', 0); velo_class_info = primary.get('velocity_class_info', {}); velo_name = velo_class_info.get('name', 'N/A')
+        if IS_RASPBERRY_PI and "tts_message" in report: threading.Thread(target=self.backend.speak, args=(report["tts_message"],), daemon=True).start()
+        color_map = {"SAFE": "#28A745", "MONITOR": "#17A2B8", "WARNING": "#FFC107", "CRITICAL": "#DC3545", "ADAPTING": "#6C757D", "INITIALIZING": "#6C757D"}
+        new_color = color_map.get(status_code, "black")
+        if self.last_final_status_config["text"] != status_code or self.last_final_status_config["color"] != new_color: self.final_status_label.config(text=status_code, foreground=new_color); self.last_final_status_config["text"] = status_code; self.last_final_status_config["color"] = new_color
+        self.summary_text_label.config(text=summary); self.disp_label.config(text=f"Dịch chuyển 3D: {disp:.2f} mm"); self.velo_label.config(text=f"Vận tốc 3D: {velo:.3f} mm/s"); self.water_label.config(text=f"Mực nước: {water:.3f} m"); self.water_roc_label.config(text=f"Tốc độ nước: {water_roc:.2f} mm/phút")
+        self.threat_score_label.config(text=f"Điểm Rủi ro: {threat_score:.0f}"); self.anomaly_label.config(text=f"Điểm Bất thường AI: {anomaly_score:.3f}"); self.sentry_label.config(text=f"Lính canh: {sentry_reason}"); self.velo_class_label.config(text=f"Phân loại IUGS: {velo_name}")
+        self.backend.displacement_history.append((ts, disp)); self.backend.water_level_history.append((ts, water)); self.backend.anomaly_score_history.append((ts, anomaly_score)); self.backend.threat_score_history.append((ts, threat_score))
+
+    def process_heartbeat(self, hb):
+        status_code = hb.get('status_code', 'UNKNOWN'); disp = hb.get('displacement_3d_mm', 0); water = hb.get('water_level_m', 0)
+        self.disp_label.config(text=f"Dịch chuyển 3D: {disp:.2f} mm"); self.water_label.config(text=f"Mực nước: {water:.3f} m")
+        color_map = {"SAFE": "#28A745", "MONITOR": "#17A2B8", "WARNING": "#FFC107", "CRITICAL": "#DC3545", "ADAPTING": "#6C757D", "INITIALIZING": "#6C757D"}
+        new_color = color_map.get(status_code, "black")
+        if self.last_final_status_config["color"] != new_color: self.final_status_label.config(foreground=new_color); self.last_final_status_config["color"] = new_color
+
+    def reset_dashboard(self):
+        self.final_status_label.config(text="CHỜ DỮ LIỆU", foreground="black"); self.summary_text_label.config(text="Cấu hình và chuyển sang chế độ TỰ ĐỘNG để bắt đầu giám sát.")
+        self.disp_label.config(text="Dịch chuyển 3D: -- mm"); self.velo_label.config(text="Vận tốc 3D: -- mm/s"); self.water_label.config(text="Mực nước: -- m"); self.water_roc_label.config(text="Tốc độ nước: -- mm/phút")
+        self.threat_score_label.config(text="Điểm Rủi ro: --"); self.anomaly_label.config(text="Điểm Bất thường AI: --"); self.sentry_label.config(text="Lính canh: --"); self.velo_class_label.config(text="Phân loại IUGS: --")
+    
     def load_initial_data(self):
-        self.broker_entry.insert(0, self.backend.broker)
-        self.port_entry.insert(0, str(self.backend.port))
-        self.user_entry.insert(0, self.backend.username)
-        self.pass_entry.insert(0, self.backend.password)
-        self.pub_entry.insert(0, self.backend.publish_topic)
-        self.water_topic_entry.insert("1.0", "\n".join(self.backend.water_topics))
-        self.gnss_topic_entry.insert("1.0", "\n".join(self.backend.gnss_topics))
-        self.warning_threshold_var.set(str(self.backend.warning_threshold))
-        self.critical_threshold_var.set(str(self.backend.critical_threshold))
-
-    def _validate_config(self, settings):
-        errors = []
-        if not settings.get('broker'):
-            errors.append("MQTT Broker không được để trống")
+        self.broker_entry.insert(0, self.backend.broker); self.port_entry.insert(0, str(self.backend.port)); self.user_entry.insert(0, self.backend.username); self.pass_entry.insert(0, self.backend.password)
+        self.water_topic_entry.insert("1.0", "\n".join(self.backend.water_topics)); self.gnss_topic_entry.insert("1.0", "\n".join(self.backend.gnss_topics))
+    
+    def save_main_config(self):
         try:
-            port = int(settings.get('port', 0))
-            if not (1 <= port <= 65535):
-                errors.append("Port phải là một số từ 1-65535")
-        except (ValueError, TypeError):
-            errors.append("Port phải là một số nguyên")
-        try:
-            warning = float(settings.get('warning_threshold', 0))
-            critical = float(settings.get('critical_threshold', 0))
-            if critical <= warning:
-                errors.append("Ngưỡng nguy hiểm phải lớn hơn ngưỡng cảnh báo")
-        except (ValueError, TypeError):
-            errors.append("Các giá trị ngưỡng phải là số")
-        return errors
-
-    def apply_and_save_config(self, show_message=True, parent_window=None):
-        if parent_window is None: 
-            parent_window = self.root
+        # Thu thập dữ liệu từ giao diện
+            broker = self.broker_entry.get().strip()
+            port_str = self.port_entry.get().strip()
+            username = self.user_entry.get().strip()
+            password = self.pass_entry.get().strip()
         
-        settings = {
-            'broker': self.broker_entry.get(),
-            'port': self.port_entry.get(),
-            'username': self.user_entry.get(),
-            'password': self.pass_entry.get(),
-            'water_topics': self.water_topic_entry.get("1.0", "end-1c").strip(),
-            'gnss_topics': self.gnss_topic_entry.get("1.0", "end-1c").strip(),
-            'publish': self.pub_entry.get(),
-            'warning_threshold': self.warning_threshold_var.get(),
-            'critical_threshold': self.critical_threshold_var.get(),
-            'gnss_time_settings': {
-                'calculate_per_second': self.gnss_second_var.get(),
-                'calculate_per_minute': self.gnss_minute_var.get(),
-                'calculate_per_hour': self.gnss_hour_var.get(),
-                'calculate_per_day': self.gnss_day_var.get(),
-                'calculate_per_month': self.gnss_month_var.get()
-            },
-            'water_sound_directory': self.water_sound_dir_var.get().strip(),
-            'gnss_sound_directory': self.gnss_sound_dir_var.get().strip()
-        }
-
-        errors = self._validate_config(settings)
-        if errors:
-            messagebox.showerror("Lỗi Cấu hình", "\n".join(errors), parent=parent_window)
-            return False
-
-        try:
-        # Truyền cài đặt GNSS mới vào backend
-            self.backend.gnss_time_settings.update(settings['gnss_time_settings'])
-            self.backend.water_sound_directory = settings['water_sound_directory']
-            self.backend.gnss_sound_directory = settings['gnss_sound_directory']
-            self.backend.update_and_reconnect(settings)
-            if show_message:
-                messagebox.showinfo("Thành công", "Đã lưu và áp dụng cấu hình.", parent=parent_window)
-            return True
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể áp dụng cấu hình: {e}", parent=parent_window)
-            return False
-
-    def update_status_label(self):
-        if self.status_label.cget("text") != self.backend.status_text or self.status_label.cget("foreground") != self.backend.status_color:
-            self.status_label.config(text=self.backend.status_text, foreground=self.backend.status_color)
-
-    def toggle_pass(self): self.pass_entry.config(show="" if self.pass_entry.cget("show") else "*")
-    def on_check_led_click(self):
-        if not self.backend.check_leds(): messagebox.showwarning("Cảnh báo", "Chỉ có thể kiểm tra LED ở chế độ THỦ CÔNG (OFF).", parent=self.root)
-    def clear_table_gui(self):
-        if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn xóa toàn bộ dữ liệu hiện tại?", parent=self.root): self.backend.clear_all_data()
-
-    def save_to_csv(self):
-        if not self.backend.sensor_data: messagebox.showinfo("Thông báo", "Không có dữ liệu để lưu.", parent=self.root); return
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")], title="Lưu file CSV", parent=self.root)
-        if path:
-            self.save_csv_button.config(state="disabled")
-            data_copy = list(self.backend.sensor_data)
-            threading.Thread(target=self._write_csv_in_background, args=(path, data_copy), daemon=True).start()
-
-    def _write_csv_in_background(self, path, data_to_save):
-        try:
-            import csv
-            with open(path, "w", newline="", encoding='utf-8-sig') as f:
-                writer = csv.writer(f)
-                writer.writerow(["Tên", "Giá trị ", "Trạng thái", "Thời gian"])
-                writer.writerows(data_to_save)
-            if self.root.winfo_exists():
-                self.root.after(0, lambda: messagebox.showinfo("Thành công", f"Đã lưu dữ liệu vào {os.path.basename(path)}", parent=self.root))
-        except Exception as e:
-            if self.root.winfo_exists():
-                self.root.after(0, lambda: messagebox.showerror("Lỗi", f"Không thể lưu file:\n\n{e}", parent=self.root))
-        finally:
-            if self.root.winfo_exists():
-                self.root.after(0, lambda: self.save_csv_button.config(state="normal"))
-
-    def open_settings_window(self):
-        if self.settings_window and self.settings_window.winfo_exists():
-            self.settings_window.lift()
-            return
-
-        self.settings_window = Toplevel(self.root)
-        self.settings_window.title("Cài đặt Nâng cao")
-        self.settings_window.geometry("800x600")
-        self.settings_window.transient(self.root)
-
-        notebook = ttk.Notebook(self.settings_window)
-        notebook.pack(pady=10, padx=10, fill="both", expand=True)
-
-    # Tab Mực nước
-        water_level_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(water_level_frame, text='Mực nước')
-    
-    # Hàm helper để tạo labeled entry - THÊM ĐỊNH NGHĨA NÀY
-        def add_labeled_entry_settings(parent, label_text, row, var):
-            ttk.Label(parent, text=label_text).grid(row=row, column=0, sticky="w", pady=5)
-            entry = ttk.Entry(parent, textvariable=var)
-            entry.grid(row=row, column=1, sticky="ew", pady=5, padx=5)
-            parent.grid_columnconfigure(1, weight=1)
-            return entry
-    
-    # Các trường cũ
-        add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
-        add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
-    
-    # Thêm phần âm thanh cho nước
-        ttk.Separator(water_level_frame).grid(row=2, column=0, columnspan=3, pady=10, sticky="ew")
-    
-        ttk.Label(water_level_frame, text="Âm thanh cảnh báo nước:").grid(row=3, column=0, sticky="w", pady=5)
-        water_sound_dir_entry = ttk.Entry(water_level_frame, textvariable=self.water_sound_dir_var)
-        water_sound_dir_entry.grid(row=3, column=1, sticky="ew", pady=5, padx=5)
-    
-        ttk.Button(water_level_frame, text="Duyệt...", 
-                command=lambda: self.browse_directory(self.water_sound_dir_var)).grid(row=3, column=2, padx=5)
-    
-        ttk.Button(water_level_frame, text="Tải lại âm thanh", 
-                command=self.reload_water_sounds, bootstyle="info").grid(row=4, column=0, columnspan=3, pady=5)
-
-    # Tab GNSS
-        gnss_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(gnss_frame, text='GNSS')
-    
-    # Các trường cũ
-        classification_button_frame = ttk.Frame(gnss_frame)
-        classification_button_frame.pack(fill="x", pady=(5, 10))
-        ttk.Button(classification_button_frame, text="Phân loại Tốc độ Dịch chuyển...", 
-                command=self.open_classification_window, bootstyle="info").pack(side="left")
-    
-    # Cài đặt thời gian tính toán
-        gnss_settings_frame = ttk.LabelFrame(gnss_frame, text="Cài đặt Tính toán Vận tốc", padding="10")
-        gnss_settings_frame.pack(fill="x", expand=True, pady=10)
-    
-        ttk.Label(gnss_settings_frame, text="Tính vận tốc theo:").pack(anchor="w", pady=5)
-        self.gnss_second_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_second', True))
-        ttk.Checkbutton(gnss_settings_frame, text="Giây", variable=self.gnss_second_var).pack(anchor="w", padx=10)
-        self.gnss_minute_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_minute', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Phút", variable=self.gnss_minute_var).pack(anchor="w", padx=10)
-        self.gnss_hour_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_hour', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Giờ", variable=self.gnss_hour_var).pack(anchor="w", padx=10)
-        self.gnss_day_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_day', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Ngày", variable=self.gnss_day_var).pack(anchor="w", padx=10)
-        self.gnss_month_var = tk.BooleanVar(value=self.backend.gnss_time_settings.get('calculate_per_month', False))
-        ttk.Checkbutton(gnss_settings_frame, text="Tháng", variable=self.gnss_month_var).pack(anchor="w", padx=10)
-    
-    # Thêm phần âm thanh cho GNSS
-        ttk.Separator(gnss_frame).pack(fill="x", pady=10)
-        ttk.Label(gnss_frame, text="Âm thanh cảnh báo GNSS:").pack(anchor="w", pady=5)
-        gnss_sound_dir_entry = ttk.Entry(gnss_frame, textvariable=self.gnss_sound_dir_var)
-        gnss_sound_dir_entry.pack(fill="x", pady=5)
-    
-        ttk.Button(gnss_frame, text="Duyệt...", 
-                command=lambda: self.browse_directory(self.gnss_sound_dir_var)).pack(pady=5)
-
-    # Nút Lưu & Đóng
-        ttk.Button(self.settings_window, text="Lưu & Đóng", command=self.save_and_close_settings, bootstyle="success").pack(pady=10)
-
-    def open_classification_window(self):
-        """Mở một cửa sổ Toplevel mới để hiển thị và chỉnh sửa bảng phân loại."""
-        if self.classification_win and self.classification_win.winfo_exists():
-            self.classification_win.lift()
-            return
-            
-        self.classification_win = Toplevel(self.settings_window)
-        self.classification_win.title("Bảng Phân Loại Tốc Độ Dịch Chuyển")
-        self.classification_win.geometry("780x420")
-        self.classification_win.transient(self.settings_window)
-        self.classification_win.grab_set()
-
-        main_frame = ttk.Frame(self.classification_win, padding=10)
-        main_frame.pack(fill="both", expand=True)
-
-        classification_frame = ttk.LabelFrame(main_frame, text="Bảng phân loại", padding="10")
-        classification_frame.pack(fill="both", expand=True, pady=(0, 10))
-        
-        columns = ("Phân loại", "m/năm", "m/tháng", "m/ngày", "m/giờ", "m/phút", "m/giây", "mm/giây")
-        self.gnss_tree = ttk.Treeview(classification_frame, columns=columns, show="headings", height=10)
-        for col in columns:
-            self.gnss_tree.heading(col, text=col)
-            self.gnss_tree.column(col, width=90, anchor="center")
-            
-        tree_scrollbar = ttk.Scrollbar(classification_frame, orient="vertical", command=self.gnss_tree.yview)
-        self.gnss_tree.configure(yscrollcommand=tree_scrollbar.set)
-        self.gnss_tree.pack(side="left", fill="both", expand=True)
-        tree_scrollbar.pack(side="right", fill="y")
-        
-        self.load_gnss_classification_data()
-        
-        control_frame = ttk.Frame(main_frame)
-        control_frame.pack(fill="x", pady=(10, 0))
-        
-        # Các nút điều khiển trỏ đến các hàm hiện có
-        ttk.Button(control_frame, text="Chỉnh sửa", command=self.edit_gnss_classification).pack(side="left", padx=(0, 5))
-        ttk.Button(control_frame, text="Thêm mới", command=self.add_gnss_classification).pack(side="left", padx=5)
-        ttk.Button(control_frame, text="Xóa", command=self.delete_gnss_classification).pack(side="left", padx=5)
-        ttk.Button(control_frame, text="Khôi phục mặc định", command=self.reset_gnss_classification, bootstyle="danger").pack(side="left", padx=5)
-
-    def save_and_close_settings(self):
-        success = self.apply_and_save_config(show_message=False, parent_window=self.settings_window)
-        if success:
-            messagebox.showinfo("Thành công", "Đã lưu tất cả cài đặt.", parent=self.settings_window)
-            self.settings_window.destroy()
-            
-    def load_gnss_classification_data(self):
-        for item in self.gnss_tree.get_children():
-            self.gnss_tree.delete(item)
-        for i, classification in enumerate(self.backend.gnss_speed_classification):
-            value = (
-                classification.get("name", "N/A"),
-                classification.get("m_nam", "-"),
-                classification.get("m_thang", "-"),
-                classification.get("m_ngay", "-"),
-                classification.get("m_gio", "-"),
-                classification.get("m_phut", "-"),
-                classification.get("m_giay", "-"),
-                classification.get("mm_giay", "-")
-            )
-            self.gnss_tree.insert("", "end", values=value, tags=(str(i),))
-
-    def edit_gnss_classification(self):
-        parent = self.classification_win if self.classification_win and self.classification_win.winfo_exists() else self.settings_window
-        selected = self.gnss_tree.selection()
-        if not selected:
-            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để chỉnh sửa.", parent=parent)
-            return
-        item = selected[0]
-        index = int(self.gnss_tree.item(item)["tags"][0])
-        self.open_classification_editor(index)
-
-    def add_gnss_classification(self):
-        new_item = {
-            "name": "Mới", "m_nam": "", "m_thang": "", "m_ngay": "",
-            "m_gio": 0, "m_phut": 0, "m_giay": 0, "mm_giay": 0
-        }
-        self.backend.gnss_speed_classification.append(new_item)
-        self.load_gnss_classification_data()
-        self.backend.save_config()
-
-    def delete_gnss_classification(self):
-        parent = self.classification_win if self.classification_win and self.classification_win.winfo_exists() else self.settings_window
-        selected = self.gnss_tree.selection()
-        if not selected:
-            messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để xóa.", parent=parent)
-            return
-        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa mục này?", parent=parent):
-            item = selected[0]
-            index = int(self.gnss_tree.item(item)["tags"][0])
-            del self.backend.gnss_speed_classification[index]
-            self.load_gnss_classification_data()
-            self.backend.save_config()
-
-    def reset_gnss_classification(self):
-        parent = self.classification_win if self.classification_win and self.classification_win.winfo_exists() else self.settings_window
-        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn khôi phục bảng về giá trị mặc định?", parent=parent):
-            self.backend._reset_gnss_to_default()
-            self.load_gnss_classification_data()
-            self.backend.save_config()
-
-    def open_classification_editor(self, index):
-        parent = self.classification_win if self.classification_win and self.classification_win.winfo_exists() else self.settings_window
-        editor_window = Toplevel(parent)
-        editor_window.title("Chỉnh sửa phân loại tốc độ")
-        editor_window.geometry("400x350")
-        editor_window.transient(parent)
-        editor_window.grab_set()
-        
-        classification = self.backend.gnss_speed_classification[index]
-        vars_dict = {}
-        fields = [
-            ("Tên phân loại:", "name"), ("m/năm:", "m_nam"), ("m/tháng:", "m_thang"), 
-            ("m/ngày:", "m_ngay"), ("m/giờ:", "m_gio"), ("m/phút:", "m_phut"),
-            ("m/giây:", "m_giay"), ("mm/giây:", "mm_giay")
-        ]
-        
-        for label, key in fields:
-            vars_dict[key] = tk.StringVar(value=str(classification.get(key, '')))
-        
-        main_frame = ttk.Frame(editor_window, padding="10")
-        main_frame.pack(fill="both", expand=True)
-        for i, (label, key) in enumerate(fields):
-            ttk.Label(main_frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=5)
-            entry = ttk.Entry(main_frame, textvariable=vars_dict[key])
-            entry.grid(row=i, column=1, sticky="ew", pady=5, padx=5)
-            main_frame.grid_columnconfigure(1, weight=1)
-        
-        button_frame = ttk.Frame(editor_window)
-        button_frame.pack(fill="x", pady=10)
-
-        def save_changes():
+        # Validate port
             try:
-                for key, var in vars_dict.items():
-                    value = var.get().strip()
-                    if key == "name":
-                        classification[key] = value
-                    else:
-                        classification[key] = float(value) if value else ""
-                self.load_gnss_classification_data()
-                self.backend.save_config()
-                editor_window.destroy()
+                port = int(port_str) if port_str else Constants.DEFAULT_PORT
             except ValueError:
-                messagebox.showerror("Lỗi", "Giá trị số không hợp lệ.", parent=editor_window)
-        
-        ttk.Button(button_frame, text="Lưu", command=save_changes).pack(side="left", padx=10)
-        ttk.Button(button_frame, text="Hủy", command=editor_window.destroy).pack(side="right", padx=10)
-
-    def show_chart_window(self):
-        if self.chart_window and self.chart_window.winfo_exists():
-            self.chart_window.lift()
-            return
-
-        self.chart_window = Toplevel(self.root)
-        self.chart_window.title("Biểu đồ Dữ liệu Cảm biến")
-        self.chart_window.geometry("900x650")
-        self.chart_window.protocol("WM_DELETE_WINDOW", self.on_chart_close)
-
-        # Chart-specific attributes
-        self.current_start_index = 0
-        self._is_updating_slider = False
-        self._slider_after_id = None
-        self.points_per_view = Constants.CHART_POINTS_PER_VIEW
-        
-        top_frame = ttk.Frame(self.chart_window, padding=(10, 5))
-        top_frame.pack(side=tk.TOP, fill=tk.X)
-        ttk.Label(top_frame, text="Chọn đơn vị:").pack(side=tk.LEFT, padx=(0, 5))
-        self.unit_selector = ttk.Combobox(top_frame, state="readonly", values=list(self.CONVERSION_FACTORS.keys()))
-        self.unit_selector.set("m")
-        self.unit_selector.pack(side=tk.LEFT, padx=5)
-        self.unit_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
-        
-        self.auto_follow_var = tk.BooleanVar(value=True)
-        auto_follow_check = ttk.Checkbutton(top_frame, text="Tự động theo dõi", variable=self.auto_follow_var, command=self.on_auto_follow_toggle)
-        auto_follow_check.pack(side=tk.LEFT, padx=20)
-        
-        chart_frame = ttk.Frame(self.chart_window, padding=(10, 5))
-        chart_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.fig = Figure(figsize=(9, 4.5), dpi=100)
-        self.ax = self.fig.add_subplot(111)
-        self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        slider_frame = ttk.Frame(self.chart_window, padding=10)
-        slider_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        self.position_var = tk.DoubleVar()
-        self.position_scale = ttk.Scale(slider_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=self.position_var, command=self.on_slider_change)
-        self.position_scale.pack(side=tk.TOP, fill=tk.X, expand=True)
-        self.info_label = ttk.Label(slider_frame, text="Tổng điểm: 0 | Hiển thị: 0-0", font=("Arial", 9))
-        self.info_label.pack(side=tk.TOP, pady=(5, 0))
-        
-        self.update_plot()
-
-    def clear_chart_data(self):
-        self.current_start_index = 0
-        self.auto_follow_var.set(True)
-        self.update_plot()
-
-    def update_plot(self):
-        if not (self.chart_window and self.chart_window.winfo_exists()): return
-        all_data = list(self.backend.plot_data_points)
-        total_points = len(all_data)
-        
-        start, end = self._update_slider_and_indices(total_points)
-        display_data_slice = all_data[start:end]
-        
-        self.ax.clear()
-        if not display_data_slice:
-            self._setup_plot_style()
-            self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
-            self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
-        else:
-            indices, values, times, unit, warn_thresh, crit_thresh = self._prepare_plot_data(display_data_slice, start)
-            self._setup_plot_style(unit)
-            self._draw_plot_elements(indices, values, warn_thresh, crit_thresh)
-            self._configure_plot_axes(start, end, total_points, indices, times)
-        
-        self.canvas.draw()
-
-    def _update_slider_and_indices(self, total_points):
-        if total_points <= self.points_per_view:
-            self.position_scale.config(state="disabled")
-            self.current_start_index = 0
-            pos_percent = 0
-        else:
-            self.position_scale.config(state="normal")
-            max_start_idx = total_points - self.points_per_view
-            if self.auto_follow_var.get():
-                self.current_start_index = max_start_idx
+                messagebox.showerror("Lỗi", "Port phải là một số nguyên!", parent=self.root)
+                return
             
-            self.current_start_index = min(self.current_start_index, max_start_idx)
-            pos_percent = (self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100
+        # Thu thập topics
+            gnss_topics_text = self.gnss_topic_entry.get("1.0", tk.END).strip()
+            water_topics_text = self.water_topic_entry.get("1.0", tk.END).strip()
         
-        self._is_updating_slider = True
-        self.position_var.set(pos_percent)
-        self._is_updating_slider = False
+            gnss_topics = [t.strip() for t in gnss_topics_text.splitlines() if t.strip()]
+            water_topics = [t.strip() for t in water_topics_text.splitlines() if t.strip()]
         
-        start = self.current_start_index
-        end = min(total_points, start + self.points_per_view)
-        return start, end
-
-    def _prepare_plot_data(self, data_slice, start_index):
-        unit = self.unit_selector.get()
-        conversion_factor = self.CONVERSION_FACTORS.get(unit, 1.0)
-        indices = range(start_index, start_index + len(data_slice))
-        values = [item[1] * conversion_factor for item in data_slice]
-        times = [item[0] for item in data_slice]
-        warning_thresh = self.backend.warning_threshold * conversion_factor
-        critical_thresh = self.backend.critical_threshold * conversion_factor
-        return indices, values, times, unit, warning_thresh, critical_thresh
-
-    def _setup_plot_style(self, unit='Giá trị'):
-        self.ax.set_title('Dữ liệu Cảm biến Theo Thời Gian', fontsize=14, fontweight='bold')
-        self.ax.set_xlabel('Thời gian', fontsize=12)
-        self.ax.set_ylabel(f'Giá trị ({unit})', fontsize=12)
-        self.ax.grid(True, which='major', linestyle='--', alpha=0.6)
-
-    def _draw_plot_elements(self, indices, values, warning_thresh, critical_thresh):
-        self.ax.plot(indices, values, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=3)
+        # Chuẩn bị dictionary settings
+            all_settings = {
+                'broker': broker or Constants.DEFAULT_BROKER,
+                'port': port,
+                'username': username,
+                'password': password,
+                'publish_topic': self.backend.publish_topic,  # Giữ nguyên publish_topic hiện tại
+                'water_topics': water_topics,
+                'gnss_topics': gnss_topics,
+                'warning_threshold': self.backend.warning_threshold,  # Giữ nguyên ngưỡng hiện tại
+                'critical_threshold': self.backend.critical_threshold,
+                'velocity_classification_table': self.backend.velocity_classification_table  # Giữ nguyên bảng phân loại
+            }
         
-        safe_indices, warn_indices, crit_indices = [], [], []
-        safe_values, warn_values, crit_values = [], [], []
-        for i, val in zip(indices, values):
-            if val >= critical_thresh: crit_indices.append(i); crit_values.append(val)
-            elif val >= warning_thresh: warn_indices.append(i); warn_values.append(val)
-            else: safe_indices.append(i); safe_values.append(val)
+        # Gọi hàm lưu của backend
+            success = self.backend.update_and_save_all_settings(all_settings)
         
-        self.ax.scatter(safe_indices, safe_values, color='green', s=30, label='An toàn', zorder=5)
-        self.ax.scatter(warn_indices, warn_values, color='orange', s=30, label='Cảnh báo', zorder=5)
-        self.ax.scatter(crit_indices, crit_values, color='red', s=30, label='Nguy hiểm', zorder=5)
+            if success:
+                messagebox.showinfo("Thành công", "Đã lưu cấu hình MQTT & Topics thành công!\n\nHệ thống sẽ khởi động lại nếu đang ở chế độ TỰ ĐỘNG.", parent=self.root)
+            else:
+                messagebox.showerror("Lỗi", "Không thể lưu cấu hình. Vui lòng kiểm tra log để biết chi tiết.", parent=self.root)
+            
+        except Exception as e:
+            logger.error(f"Lỗi trong save_main_config: {e}")
+            messagebox.showerror("Lỗi", f"Đã xảy ra lỗi khi lưu cấu hình: {str(e)}", parent=self.root)
+    
+    def update_status_label(self):
+        new_text = f"Trạng thái Bộ chỉ huy: {self.backend.status_text}"; new_style = f"{self.backend.status_color}.Inverse"
+        if self.status_label.cget("text") != new_text or self.last_status_label_style != new_style:
+            self.status_label.config(text=new_text, bootstyle=new_style); self.last_status_label_style = new_style
+            
+    def clear_gui_data(self):
+        if messagebox.askokcancel("Xác nhận", "Xóa toàn bộ lịch sử hiển thị?", parent=self.root): self.backend.clear_all_data()
+    
+    def show_chart_window(self): messagebox.showinfo("Sắp ra mắt", "Chức năng biểu đồ nâng cao đang được phát triển!", parent=self.root)
+    
+    def on_check_led_click(self):
+        if not self.backend.check_leds(): messagebox.showwarning("Cảnh báo", "Chỉ có thể kiểm tra LED ở chế độ THỦ CÔNG.", parent=self.root)
         
-        unit = self.unit_selector.get()
-        self.ax.axhline(y=warning_thresh, color='gold', linestyle='--', linewidth=2, label=f'Ngưỡng Cảnh báo ({warning_thresh:.2f} {unit})')
-        self.ax.axhline(y=critical_thresh, color='darkorange', linestyle='--', linewidth=2, label=f'Ngưỡng Nguy hiểm ({critical_thresh:.2f} {unit})')
+    def on_close_window(self): logger.info("Đã đóng giao diện."); self.on_close_callback(); self.root.destroy()
+    
+    def exit_program_graceful(self):
+        if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root): self.on_close_callback(shutdown=True)
+    
+    def open_advanced_settings(self):
+        win = Toplevel(self.root); win.title("Cài đặt Nâng cao"); win.transient(self.root); win.grab_set();
+        notebook = ttk.Notebook(win); notebook.pack(pady=10, padx=10, fill="both", expand=True)
+        # Tab 1
+        settings_frame = ttk.Frame(notebook, padding="10"); notebook.add(settings_frame, text='Ngưỡng & Publish')
         
-    def _configure_plot_axes(self, start, end, total_points, indices, times):
-        self.ax.set_xlim(left=start - 0.5, right=start + self.points_per_view - 1.5)
-        num_ticks = min(len(indices), 8)
-        if num_ticks > 1:
-            tick_indices_in_slice = np.linspace(0, len(indices) - 1, num_ticks, dtype=int)
-            self.ax.set_xticks([indices[i] for i in tick_indices_in_slice])
-            self.ax.set_xticklabels([times[i].strftime('%H:%M:%S') for i in tick_indices_in_slice], rotation=25, ha='right')
-        elif len(indices) == 1:
-            self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
+        self.adv_warn_thresh_var = tk.StringVar(value=str(self.backend.warning_threshold))
+        self.adv_crit_thresh_var = tk.StringVar(value=str(self.backend.critical_threshold))
+        self.adv_pub_topic_var = tk.StringVar(value=self.backend.publish_topic)
         
-        handles, labels = self.ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        self.ax.legend(by_label.values(), by_label.keys(), loc='upper left')
-        self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
-        self.fig.tight_layout()
-
-    def on_auto_follow_toggle(self):
-        if self.auto_follow_var.get():
-            self.update_plot()
-
-    def on_slider_change(self, value_str):
-        if self._is_updating_slider: return
-        if self._slider_after_id:
-            self.root.after_cancel(self._slider_after_id)
-        self._slider_after_id = self.root.after(100, lambda: self._perform_slider_update(float(value_str)))
-
-    def _perform_slider_update(self, value):
-        self._slider_after_id = None
-        self.auto_follow_var.set(False)
-        total_points = len(self.backend.plot_data_points)
-        if total_points <= self.points_per_view: return
+        ttk.Label(settings_frame, text="Ngưỡng Cảnh báo Nước (m):").pack(anchor="w", pady=(0,2)); ttk.Entry(settings_frame, textvariable=self.adv_warn_thresh_var).pack(fill="x", pady=(0,10))
+        ttk.Label(settings_frame, text="Ngưỡng Nguy hiểm Nước (m):").pack(anchor="w", pady=(0,2)); ttk.Entry(settings_frame, textvariable=self.adv_crit_thresh_var).pack(fill="x", pady=(0,10))
+        ttk.Label(settings_frame, text="Publish Topic (để trống nếu không dùng):").pack(anchor="w", pady=(0,2)); ttk.Entry(settings_frame, textvariable=self.adv_pub_topic_var).pack(fill="x")
         
-        max_start_index = total_points - self.points_per_view
-        self.current_start_index = int((value / 100) * max_start_index)
-        self.update_plot()
+        # Tab 2
+        velo_frame = ttk.Frame(notebook, padding="10"); notebook.add(velo_frame, text='Phân loại Tốc độ')
+        ttk.Label(velo_frame, text="Tùy chỉnh phân loại vận tốc theo tiêu chuẩn IUGS.", justify="center").pack(pady=5)
+        
+        header_frame = ttk.Frame(velo_frame); header_frame.pack(fill="x", pady=5)
+        ttk.Label(header_frame, text="Tên Phân loại", font='-weight bold').pack(side="left", expand=True)
+        ttk.Label(header_frame, text="Ngưỡng dưới (mm/s)", font='-weight bold').pack(side="left", padx=10)
 
-    def on_chart_close(self):
-        if self._slider_after_id: self.root.after_cancel(self._slider_after_id)
-        plt.close(self.fig)
-        self.chart_window.destroy()
-        self.chart_window = None
+        entry_vars = []
+        # Tạo bản sao sâu để chỉnh sửa không ảnh hưởng đến dữ liệu gốc cho đến khi lưu
+        table_copy = [item.copy() for item in self.backend.velocity_classification_table]
+        sorted_table = sorted(table_copy, key=lambda x: x['speed_class'], reverse=True)
+        
+        for item in sorted_table:
+            row_frame = ttk.Frame(velo_frame); row_frame.pack(fill="x", pady=2)
+            ttk.Label(row_frame, text=f"Cấp {item['speed_class']}:", width=8).pack(side="left")
+            name_var, thresh_var = tk.StringVar(value=item['name']), tk.StringVar(value=str(item['threshold_mmps']))
+            entry_vars.append({'speed_class': item['speed_class'], 'name_var': name_var, 'thresh_var': thresh_var})
+            ttk.Entry(row_frame, textvariable=name_var).pack(side="left", fill="x", expand=True, padx=5)
+            ttk.Entry(row_frame, textvariable=thresh_var, width=15).pack(side="left")
+        
+        button_frame = ttk.Frame(win, padding=10); button_frame.pack(fill="x", side="bottom")
+        ttk.Button(button_frame, text="Lưu & Áp dụng", command=lambda: self.save_advanced_settings(win, entry_vars), bootstyle="success").pack(side="right")
+        ttk.Button(button_frame, text="Hủy", command=win.destroy).pack(side="right", padx=5)
 
-   
+    def save_advanced_settings(self, win, velo_entry_vars):
+        try:
+            # Thu thập và validate tất cả dữ liệu
+            new_velo_table = [{"speed_class": item['speed_class'], "name": item['name_var'].get().strip(), "threshold_mmps": float(item['thresh_var'].get())} for item in velo_entry_vars]
+            
+            # Cập nhật backend với TẤT CẢ cài đặt
+            all_settings = {
+                'broker': self.backend.broker, 'port': self.backend.port, 'username': self.backend.username, 'password': self.backend.password,
+                'publish_topic': self.adv_pub_topic_var.get().strip(),
+                'water_topics': self.backend.water_topics, 'gnss_topics': self.backend.gnss_topics,
+                'warning_threshold': float(self.adv_warn_thresh_var.get()), 'critical_threshold': float(self.adv_crit_thresh_var.get()),
+                'velocity_classification_table': new_velo_table
+            }
+            self.backend.update_and_save_all_settings(all_settings)
+            
+            win.destroy()
+            messagebox.showinfo("Thành công", "Đã lưu cài đặt nâng cao. Hệ thống phân tích sẽ khởi động lại nếu đang chạy.", parent=self.root)
+        except ValueError:
+            messagebox.showerror("Lỗi", "Ngưỡng phải là một con số hợp lệ.", parent=win)
+
+    def handle_interactive_request(self, request_data):
+        self.interactive_dialog_open = True; dialog = Toplevel(self.root); dialog.title(request_data['title']); dialog.transient(self.root); dialog.grab_set()
+        message_label = ttk.Label(dialog, text=request_data['message'], wraplength=400, padding=20); message_label.pack()
+        button_frame = ttk.Frame(dialog, padding=10); button_frame.pack()
+        def on_button_click(option):
+            self.backend.send_command_to_shifting({"type": "USER_RESPONSE", "response_to": request_data.get('type'), "request_id": request_data.get('request_id'), "user_choice": option})
+            self.interactive_dialog_open = False; dialog.destroy()
+        for option in request_data.get('options', []):
+            btn = ttk.Button(button_frame, text=option.replace('_', ' ').title(), command=lambda o=option: on_button_click(o)); btn.pack(side="left", padx=10)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: on_button_click("dismissed"))
+
 # ===========================
 # KHỐI ĐIỀU KHIỂN CHÍNH 
 # ===========================
 class MainController:
     def __init__(self, backend, command_queue):
-        self.backend = backend
-        self.command_queue = command_queue
-        self.app_instance = None
-        self.root = ttk.Window()
-        self.root.withdraw()
-
-    def run(self):
-        self.check_for_commands()
-        self.root.mainloop()
-
+        self.backend = backend; self.command_queue = command_queue; self.app_instance = None; self.root = ttk.Window(); self.root.withdraw()
+    def run(self): self.check_for_commands(); self.root.mainloop()
     def check_for_commands(self):
-        try:
-            command = self.command_queue.get_nowait()
-            if command == 'show': self.create_gui_window()
+        try: command = self.command_queue.get_nowait()
+        except queue.Empty: pass
+        else:
+            if command == 'show': self.create_gui_window() 
             elif command == 'exit': self.handle_shutdown()
             elif command == 'restart': self.handle_restart()
-        except queue.Empty: pass
         finally:
-            if not self.backend.exiting and self.root.winfo_exists():
-                self.root.after(100, self.check_for_commands)
-
+            if not self.backend.exiting and self.root.winfo_exists(): self.root.after(100, self.check_for_commands)
     def create_gui_window(self):
-        if self.app_instance and self.app_instance.root.winfo_exists():
-            logger.info("Giao diện đã đang chạy.")
-            self.app_instance.root.lift()
-            return
-        logger.info("Đang khởi động giao diện người dùng...")
-        toplevel_window = tk.Toplevel(self.root)
-        self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
-
+        if self.app_instance and self.app_instance.root.winfo_exists(): self.app_instance.root.lift(); return
+        logger.info("Đang khởi động giao diện người dùng..."); toplevel = Toplevel(self.root)
+        self.app_instance = AppGUI(toplevel, self.backend, self.on_gui_close)
     def on_gui_close(self, shutdown=False):
-        self.app_instance = None
-        if shutdown:
-            self.command_queue.put('exit')
-
+        self.app_instance = None;
+        if shutdown: self.command_queue.put('exit')
     def handle_shutdown(self):
         logger.info("Nhận lệnh thoát...")
-        if self.app_instance: self.app_instance.destroy_all_windows()
-        self.backend.exiting = True
+        if self.app_instance and self.app_instance.root.winfo_exists(): self.app_instance.root.destroy()
+        self.backend.exiting = True;
         if self.root.winfo_exists(): self.root.destroy()
-
-    def handle_restart(self):
-        logger.info("Nhận lệnh khởi động lại...")
-        global needs_restart; needs_restart = True
-        self.handle_shutdown()
+    def handle_restart(self): logger.info("Nhận lệnh khởi động lại..."); global needs_restart; needs_restart = True; self.handle_shutdown()
 
 # ==============================================================================
 # KHỐI THỰC THI CHÍNH (MAIN)
 # ==============================================================================
-needs_restart = False
-command_queue = queue.Queue()
-
+needs_restart = False; command_queue = queue.Queue()
 def console_input_listener(cmd_queue: queue.Queue):
     while True:
-        try:
+        try: 
             command = input().strip().lower()
             if command: cmd_queue.put(command)
             if command in ['exit', 'restart']: break
-        except (EOFError, KeyboardInterrupt):
-            cmd_queue.put('exit'); break
-
-def signal_handler(signum, frame):
-    logger.info("\nNhận tín hiệu ngắt (Ctrl+C), đang thoát...")
-    while not command_queue.empty():
-        try: command_queue.get_nowait()
-        except queue.Empty: pass
-    command_queue.put('exit')
-
+        except (EOFError, KeyboardInterrupt): cmd_queue.put('exit'); break
+def signal_handler(signum, frame): logger.info("\nNhận tín hiệu ngắt (Ctrl+C), đang thoát..."); command_queue.put('exit')
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
-    
     backend_instance = Backend()
-    backend_instance.start_background_tasks()
-    
-    console_thread = threading.Thread(target=console_input_listener, args=(command_queue,), daemon=True)
-    console_thread.start()
-    
-    logger.info("="*50)
-    logger.info("Chương trình đã sẵn sàng.")
-    logger.info("Gõ 'show' để mở giao diện, 'exit' để thoát, 'restart' để khởi động lại.")
-    logger.info("="*50)
-    
+    console_thread = threading.Thread(target=console_input_listener, args=(command_queue,), daemon=True); console_thread.start()
+    logger.info("="*50); logger.info("Chương trình đã sẵn sàng."); logger.info("Gõ 'show' để mở giao diện, 'exit' để thoát."); logger.info("="*50)
     main_controller = MainController(backend_instance, command_queue)
-    command_queue.put('show')
-    main_controller.run()
-    
+    command_queue.put('show'); main_controller.run()
     if needs_restart:
-        logger.info("\n" + "="*50)
-        logger.info("KHỞI ĐỘNG LẠI CHƯƠNG TRÌNH...")
-        logger.info("="*50 + "\n")
-        try:
-            os.execv(sys.executable, ['python'] + sys.argv)
-        except Exception as e:
-            logger.critical(f"LỖI KHÔNG THỂ KHỞI ĐỘNG LẠI: {e}")
-    else:
-        logger.info("Chương trình đã kết thúc.")
+        logger.info("\n" + "="*50); logger.info("KHỞI ĐỘNG LẠI CHƯƠNG TRÌNH..."); logger.info("="*50 + "\n")
+        try: os.execv(sys.executable, ['python'] + sys.argv)
+        except Exception as e: logger.critical(f"LỖI KHÔNG THỂ KHỞI ĐỘNG LẠI: {e}")
+    else: logger.info("Chương trình đã kết thúc.")
