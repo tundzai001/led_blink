@@ -1,5 +1,3 @@
-# shifting.py (Ultimate Safety Architecture: 3D, Acceleration, Advanced Defense)
-
 import paho.mqtt.client as mqtt
 import json
 import math
@@ -302,6 +300,50 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, required=True, help='Cổng MQTT broker')
     parser.add_argument('--username', help='Username MQTT')
     parser.add_argument('--password', help='Password MQTT')
-    parser.add_argument('--topic', action='append', required=True, help='Topic GNSS để subscribe.')
+    
+    # === SỬA LỖI: Chỉ nhận và xử lý các topic GNSS ===
+    # 1. Chấp nhận '--gnss-topic' và lưu vào danh sách 'gnss_topics'.
+    parser.add_argument('--gnss-topic', dest='gnss_topics', action='append', 
+                        help='Topic GNSS để subscribe. Có thể dùng nhiều lần.')
+                        
+    # 2. Chấp nhận các đối số khác mà led.py gửi qua để không báo lỗi, nhưng chúng ta sẽ bỏ qua chúng.
+    parser.add_argument('--water-topic', action='append', help='(Bỏ qua) Topic mực nước.')
+    parser.add_argument('--publish-topic', help='(Bỏ qua) Topic để publish kết quả.')
+    parser.add_argument('--water-warn-threshold', type=float, help='(Bỏ qua) Ngưỡng cảnh báo mực nước.')
+    parser.add_argument('--water-crit-threshold', type=float, help='(Bỏ qua) Ngưỡng nguy hiểm mực nước.')
+    parser.add_argument('--pid-file', help='File để ghi Process ID (PID)')
+    
+    # Phân tích các đối số từ dòng lệnh
     args = parser.parse_args()
-    main(broker=args.broker, port=args.port, username=args.username, password=args.password, topics=args.topic)
+
+    # 3. Kiểm tra xem có topic GNSS nào được cung cấp không. Nếu không, thoát.
+    if not args.gnss_topics:
+        logger.error("Lỗi nghiêm trọng: Không có --gnss-topic nào được cung cấp. Không thể hoạt động.")
+        sys.exit(1)
+
+    # Ghi PID file nếu được yêu cầu
+    if args.pid_file:
+        try:
+            import os
+            pid = os.getpid()
+            with open(args.pid_file, 'w') as f:
+                f.write(str(pid))
+            logger.info(f"Đã ghi PID {pid} vào file {args.pid_file}")
+        except IOError as e:
+            logger.error(f"Không thể ghi PID file: {e}")
+            sys.exit(1)
+            
+    try:
+        # 4. Gọi hàm main và chỉ truyền vào danh sách các topic GNSS.
+        main(broker=args.broker, port=args.port, username=args.username, 
+             password=args.password, topics=args.gnss_topics)
+    finally:
+        # Xóa PID file khi thoát
+        if args.pid_file:
+            try:
+                import os
+                if os.path.exists(args.pid_file):
+                    os.remove(args.pid_file)
+                    logger.info(f"Đã xóa PID file: {args.pid_file}")
+            except IOError as e:
+                logger.error(f"Không thể xóa PID file: {e}")
