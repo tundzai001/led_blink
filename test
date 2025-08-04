@@ -21,23 +21,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import logging
 import atexit
-import traceback
 import subprocess
-import RPi.GPIO as GPIO
-# Thiết lập mã hóa UTF-8 cho Python 3
-if sys.version_info < (3, 7):
-    import locale
-    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-    os.environ['PYTHONIOENCODING'] = 'utf-8'
-# Thiết lập mã hóa UTF-8 cho các file
-if sys.version_info >= (3, 7):
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+import math
+import traceback
 
-# Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
+# --- THIẾT LẬP MÔI TRƯỜNG VÀ CẢNH BÁO ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+### THAY ĐỔI: Thêm dòng này để bỏ qua cảnh báo về Axes3D ###
 warnings.filterwarnings("ignore", message="Unable to import Axes3D")
 
 # --- CÁC THƯ VIỆN ĐẶC THÙ PI ---
@@ -182,11 +173,6 @@ class Backend:
         self.setup_audio_mixer(); self.setup_gpio(); self.load_config(); atexit.register(self.cleanup_on_exit)
 
     def _reset_gnss_to_default(self):
-        """
-        Khôi phục bảng phân loại tốc độ về tiêu chuẩn Cruden & Varnes (1996) / IUGS.
-        Logic phân loại của chương trình dựa vào giá trị 'mm_giay' (mm/s).
-        Các giá trị khác dùng để hiển thị cho người dùng tiện theo dõi.
-        """
         logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn Cruden & Varnes (1996) / IUGS.")
         self.gnss_speed_classification = [
             {"name": "Cực kỳ nhanh", "m_nam": ">157.680.000", "m_thang": "", "m_ngay": ">432.000", "m_gio": ">18.000", "m_phut": ">300", "m_giay": ">5", "mm_giay": 5000},
@@ -729,8 +715,7 @@ class MainController:
         logger.info("Đang khởi động giao diện người dùng..."); toplevel_window = Toplevel(self.root); self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
     def on_gui_close(self, shutdown=False): 
         self.app_instance = None;
-        if shutdown: 
-            self.command_queue.put('exit')
+        if shutdown: self.command_queue.put('exit')
     def handle_shutdown(self):
         logger.info("Nhận lệnh thoát...");
         if self.app_instance: self.app_instance.destroy_all_windows()
