@@ -1,5 +1,3 @@
-# led.py (Ultimate Version - Combined Logic & Full Original GUI)
-
 import tkinter as tk
 from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
@@ -25,6 +23,7 @@ import logging
 import atexit
 import subprocess
 import math
+import traceback
 
 # Bỏ qua cảnh báo không cần thiết và thiết lập môi trường
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
@@ -379,10 +378,8 @@ class Backend:
                 if primary_velocity_mm_s >= threshold:
                     classification_name = level.get('name', 'Không xác định')
                     break
-            else:
-                if primary_velocity_mm_s > 0:
-                     slowest_level = min([lvl for lvl in sorted_classification if float(lvl.get('mm_giay', 0)) > 0], key=lambda x: float(x.get('mm_giay')), default=None)
-                     classification_name = slowest_level['name'] if slowest_level else "Cực kỳ chậm"
+            if classification_name == "Không xác định":
+                 classification_name = "Cực kỳ chậm"
 
             name = "GNSS Analysis"
             display_value = data.get("value", 0)
@@ -577,7 +574,7 @@ class Backend:
 
     def on_connect(self, client, userdata, flags, rc, properties):
         if self.exiting: return
-        if rc == 0:
+        if rc.rc == 0:
             logger.info("MQTT Connected successfully.")
             self.status_text, self.status_color = "Trạng thái: TỰ ĐỘNG", "green"
             if self.subscribe_topics:
@@ -588,7 +585,7 @@ class Backend:
                 logger.warning("Không có topic nào để subscribe, sẽ không nhận dữ liệu.")
                 self.status_text = "Trạng thái: TỰ ĐỘNG (Không có topic)"
         else:
-            logger.error(f"Failed to connect to MQTT, return code {rc}")
+            logger.error(f"Failed to connect to MQTT, return code {rc.rc}")
             self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
             self.listening = False
 
@@ -756,8 +753,11 @@ class AppGUI:
         self.update_status_label()
 
         new_updates = self.backend.get_gui_updates()
-
+        
+        # Xử lý các bản cập nhật từ backend
         for item in new_updates:
+            if isinstance(item, dict) and item.get("type") == "HEARTBEAT":
+                continue
             if isinstance(item, dict) and item.get("type") == "collection_status":
                 collected = item['collected']
                 total = item['total']
