@@ -777,7 +777,8 @@ class MainController:
     def create_gui_window(self):
         if self.app_instance and self.app_instance.root.winfo_exists(): logger.info("Giao diện đã đang chạy."); self.app_instance.root.lift(); return
         logger.info("Đang khởi động giao diện người dùng..."); toplevel_window = Toplevel(self.root); self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
-    def on_gui_close(self, shutdown=False): self.app_instance = None;
+    def on_gui_close(self, shutdown=False):
+        self.app_instance = None
         if shutdown: self.command_queue.put('exit')
     def handle_shutdown(self):
         logger.info("Nhận lệnh thoát...");
