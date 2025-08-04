@@ -169,7 +169,10 @@ class Backend:
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
         self.shifting_process = None; self.alert_manager = AlertManager(self); self.gnss_speed_classification = []
-        self.setup_audio_mixer(); self.setup_gpio(); self.load_config(); atexit.register(self.cleanup_on_exit)
+        self.load_config()      # Tải trước
+        self.setup_audio_mixer()# Gọi sau
+        self.setup_gpio()
+        atexit.register(self.cleanup_on_exit)
 
     def _reset_gnss_to_default(self):
         logger.info("Đang khôi phục bảng phân loại GNSS về tiêu chuẩn Cruden & Varnes (1996) / IUGS.")
@@ -321,7 +324,7 @@ class Backend:
         if self.exiting: return
         logger.info("Bắt đầu quá trình dọn dẹp để thoát..."); self.exiting = True; self.stop_shifting_process()
         try:
-            if self.client and self.client.is_connected(): self.client.loop_stop(force=True); self.client.disconnect()
+            if self.client and self.client.is_connected(): self.client.loop_stop(); self.client.disconnect()
         except Exception as e: logger.error(f"Lỗi khi ngắt kết nối MQTT: {e}")
         self.save_session_data(silent=True)
         if IS_PI: GPIO.cleanup()
@@ -343,7 +346,7 @@ class Backend:
         except Exception as e: logger.error(f"Lỗi ngắt rơ-le: {e}")
     def on_connect(self, client, userdata, flags, rc, properties):
         if self.exiting: return
-        if rc.rc == 0:
+        if rc.value == 0:
             logger.info("MQTT Connected successfully."); self.status_text, self.status_color = "Trạng thái: TỰ ĐỘNG", "green"
             if self.subscribe_topics:
                 for t in self.subscribe_topics: client.subscribe(t); logger.info(f"Subscribed: {t}")
@@ -351,7 +354,7 @@ class Backend:
         else:
             logger.error(f"Failed to connect to MQTT, return code {rc.rc}"); self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
             self.listening = False
-    def on_disconnect(self, client, userdata, rc, properties):
+    def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
         if not self.exiting and self.listening: logger.warning("Mất kết nối MQTT..."); self.status_text, self.status_color = "Trạng thái: MẤT KẾT NỐI", "orange"
     def get_gui_updates(self):
         updates = [];
@@ -465,14 +468,32 @@ class AppGUI:
         if not self.root.winfo_exists(): return
         self.update_status_label()
         for item in self.backend.get_gui_updates():
-            if isinstance(item, dict) and item.get("type") in ["HEARTBEAT", "collection_status"]: continue
+            # Lọc HEARTBEAT
+            if isinstance(item, dict) and item.get("type") == "HEARTBEAT":
+                continue
+
+        # Xử lý và in trạng thái thu thập ra terminal trên một dòng duy nhất
+            if isinstance(item, dict) and item.get("type") == "collection_status":
+                collected = item.get("collected", 0)
+                total = item.get("total", "N/A")
+            # Sử dụng \r để về đầu dòng và end='' để không xuống dòng mới
+                print(f"\rSHIFTING: Đang thu thập dữ liệu... [{collected}/{total}]  ", end="")
+                sys.stdout.flush() # Đảm bảo nội dung được in ra ngay lập tức
+                continue # Bỏ qua, không thêm vào bảng
+
             if item == Constants.DATA_CLEAR_SIGNAL:
                 self.sheet.set_sheet_data(data=[]);
                 if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.clear_chart_data()
                 logger.info("GUI đã nhận tín hiệu và xóa bảng."); continue
+
             record = None
-            if isinstance(item, dict) and item.get("type") == "ultimate_analysis_report": record = self.backend.handle_gnss_report(item)
-            elif isinstance(item, tuple): record = item
+        # In một dòng trống để ngắt dòng trạng thái thu thập khi có báo cáo đầu tiên
+            if isinstance(item, dict) and item.get("type") == "ultimate_analysis_report":
+                print() 
+                record = self.backend.handle_gnss_report(item)
+            elif isinstance(item, tuple):
+                record = item
+
             if record:
                 self.sheet.insert_row(values=record); last_row_index = self.sheet.get_total_rows() - 1
                 if last_row_index >= 0:
@@ -482,10 +503,11 @@ class AppGUI:
                     elif status == "AN TOAN": highlight_color = "#D4EDDA"
                     else: highlight_color = "#E9ECEF"
                     self.sheet.highlight_rows([last_row_index], bg=highlight_color, fg="black")
+
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.update_plot()
         self.root.after(250, self.periodic_update)
-    def on_close_window(self):
-        logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại."); self.on_close_callback(); self.destroy_all_windows()
+        def on_close_window(self):
+            logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại."); self.on_close_callback(); self.destroy_all_windows()
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
             logger.info("Tự động lưu cấu hình hiện tại trước khi thoát..."); self.apply_and_save_config(show_message=False); self.on_close_callback(shutdown=True)
@@ -581,6 +603,7 @@ class AppGUI:
     def select_test_sound_file(self):
         ### THAY ĐỔI: Sửa lỗi TclError bằng cách bỏ tham số parent ###
         filepath = filedialog.askopenfilename(
+            parent=self.settings_window,
             title="Chọn file âm thanh để kiểm tra",
             initialdir=self.backend.sounds_dir,
             filetypes=[("Sound Files", "*.mp3 *.wav"), ("All files", "*.*")]
