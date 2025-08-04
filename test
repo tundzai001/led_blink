@@ -495,7 +495,7 @@ class AppGUI:
                 record = item
 
             if record:
-                self.sheet.insert_row(values=record); last_row_index = self.sheet.get_total_rows() - 1
+                self.sheet.insert_row(data=record); last_row_index = self.sheet.get_total_rows() - 1
                 if last_row_index >= 0:
                     self.sheet.see(row=last_row_index); status = record[2]
                     if status == "NGUY HIEM": highlight_color = "#F8D7DA"
@@ -506,8 +506,10 @@ class AppGUI:
 
         if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.update_plot()
         self.root.after(250, self.periodic_update)
-        def on_close_window(self):
-            logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại."); self.on_close_callback(); self.destroy_all_windows()
+    
+    def on_close_window(self):
+        logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại."); self.on_close_callback(); self.destroy_all_windows()
+    
     def exit_program_graceful(self):
         if messagebox.askokcancel("Xác nhận", "Bạn có chắc muốn thoát hoàn toàn chương trình?", parent=self.root):
             logger.info("Tự động lưu cấu hình hiện tại trước khi thoát..."); self.apply_and_save_config(show_message=False); self.on_close_callback(shutdown=True)
