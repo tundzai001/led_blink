@@ -321,7 +321,6 @@ if __name__ == "__main__":
     parser.add_argument('--username', help='Username MQTT')
     parser.add_argument('--password', help='Password MQTT')
     parser.add_argument('--gnss-topic', dest='gnss_topics', action='append', help='Topic GNSS để subscribe. Có thể dùng nhiều lần.')
-    parser.add_argument('--water-topic', action='append', help='(Bỏ qua) Topic mực nước.')
     parser.add_argument('--pid-file', help='File để ghi Process ID (PID)')
 
     args = parser.parse_args()
