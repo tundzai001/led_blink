@@ -28,7 +28,6 @@ import traceback
 # --- THIẾT LẬP MÔI TRƯỜNG VÀ CẢNH BÁO ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
-### THAY ĐỔI: Thêm dòng này để bỏ qua cảnh báo về Axes3D ###
 warnings.filterwarnings("ignore", message="Unable to import Axes3D")
 
 # --- CÁC THƯ VIỆN ĐẶC THÙ PI ---
@@ -387,6 +386,26 @@ class Backend:
             logger.info("Đang kiểm tra còi báo động..."); self.activate_siren_relay(); time.sleep(2); self.deactivate_siren_relay()
             logger.info("Kiểm tra còi hoàn tất.")
         threading.Thread(target=target, daemon=True).start(); return True
+
+    ### THAY ĐỔI: Thêm hàm kiểm tra file âm thanh cụ thể ###
+    def test_specific_sound(self, filepath):
+        if not IS_PI or not self.mixer_initialized:
+            logger.warning("Không thể kiểm tra âm thanh, pygame mixer chưa sẵn sàng.")
+            return "Mixer not ready"
+        if not os.path.exists(filepath):
+            logger.error(f"File âm thanh kiểm tra không tồn tại: {filepath}")
+            return "File not found"
+        def target():
+            try:
+                logger.info(f"Đang phát file kiểm tra: {os.path.basename(filepath)}")
+                pygame.mixer.stop() # Dừng các âm thanh khác nếu có
+                test_sound = pygame.mixer.Sound(filepath)
+                test_sound.play()
+            except Exception as e:
+                logger.error(f"Lỗi khi phát file kiểm tra '{filepath}': {e}")
+        threading.Thread(target=target, daemon=True).start()
+        return "OK"
+
     def auto_clear_scheduler(self):
         while not self.exiting:
             now = datetime.now()
@@ -428,6 +447,8 @@ class AppGUI:
         self.chart_window = None; self.settings_window = None; self.classification_win = None
         self.warning_threshold_var = tk.StringVar(); self.critical_threshold_var = tk.StringVar()
         self.sounds_dir_var = tk.StringVar()
+        ### THAY ĐỔI: Thêm biến cho đường dẫn file âm thanh kiểm tra ###
+        self.test_sound_path_var = tk.StringVar()
         self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
         self.create_widgets(); self.load_initial_data(); self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
@@ -568,21 +589,64 @@ class AppGUI:
         if not os.path.isdir(initial_dir): initial_dir = os.path.dirname(os.path.abspath(__file__))
         directory = filedialog.askdirectory(title="Chọn Thư mục chứa File Âm thanh", initialdir=initial_dir, parent=self.settings_window)
         if directory: self.sounds_dir_var.set(directory)
+
+    ### THAY ĐỔI: Thêm 2 hàm mới để chọn và phát file âm thanh kiểm tra ###
+    def select_test_sound_file(self):
+        filepath = filedialog.askopenfilename(
+            title="Chọn file âm thanh để kiểm tra",
+            initialdir=self.backend.sounds_dir,
+            filetypes=[("Sound Files", "*.mp3 *.wav"), ("All files", "*.*")],
+            parent=self.settings_window
+        )
+        if filepath:
+            self.test_sound_path_var.set(filepath)
+            
+    def play_test_sound(self):
+        filepath = self.test_sound_path_var.get()
+        if not filepath:
+            messagebox.showwarning("Chưa chọn file", "Vui lòng chọn một file âm thanh để phát.", parent=self.settings_window)
+            return
+        result = self.backend.test_specific_sound(filepath)
+        if result == "OK":
+            messagebox.showinfo("Đang phát", f"Đang gửi lệnh phát file:\n{os.path.basename(filepath)}", parent=self.settings_window)
+        elif result == "File not found":
+             messagebox.showerror("Lỗi", "Không tìm thấy file âm thanh. Vui lòng chọn lại.", parent=self.settings_window)
+        else: # Mixer not ready
+             messagebox.showerror("Lỗi", "Hệ thống âm thanh (mixer) chưa sẵn sàng hoặc không phải môi trường Pi.", parent=self.settings_window)
+
     def open_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists(): self.settings_window.lift(); return
         self.settings_window = Toplevel(self.root); self.settings_window.title("Cài đặt Nâng cao"); self.settings_window.geometry("800x600")
         self.settings_window.transient(self.root); notebook = ttk.Notebook(self.settings_window); notebook.pack(pady=10, padx=10, fill="both", expand=True)
+        
         general_frame = ttk.Frame(notebook, padding="10"); notebook.add(general_frame, text='Chung')
+        
         sounds_path_frame = ttk.LabelFrame(general_frame, text="Đường dẫn", padding=10); sounds_path_frame.pack(fill="x", expand=True)
-        ttk.Label(sounds_path_frame, text="Thư mục Âm thanh:").grid(row=0, column=0, sticky="w", pady=5, padx=5)
+        ttk.Label(sounds_path_frame, text="Thư mục Âm thanh Cảnh báo:").grid(row=0, column=0, sticky="w", pady=5, padx=5)
         sounds_entry = ttk.Entry(sounds_path_frame, textvariable=self.sounds_dir_var, state="readonly"); sounds_entry.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
         ttk.Button(sounds_path_frame, text="Chọn Thư mục...", command=self.select_sounds_directory).grid(row=1, column=1, sticky="w", pady=5, padx=(5,0))
-        sounds_path_frame.grid_columnconfigure(0, weight=1); gnss_frame = ttk.Frame(notebook, padding="10"); notebook.add(gnss_frame, text='GNSS')
+        sounds_path_frame.grid_columnconfigure(0, weight=1)
+
+        ### THAY ĐỔI: Thêm khung kiểm tra âm thanh thủ công ###
+        test_sound_frame = ttk.LabelFrame(general_frame, text="Kiểm tra Loa/Còi thủ công", padding=10)
+        test_sound_frame.pack(fill="x", expand=True, pady=(10, 0))
+        ttk.Label(test_sound_frame, text="File âm thanh kiểm tra:").grid(row=0, column=0, columnspan=3, sticky="w", padx=5)
+        test_sound_entry = ttk.Entry(test_sound_frame, textvariable=self.test_sound_path_var, state="readonly")
+        test_sound_entry.grid(row=1, column=0, sticky="ew", pady=5, padx=5)
+        ttk.Button(test_sound_frame, text="Chọn File...", command=self.select_test_sound_file).grid(row=1, column=1, sticky="w", pady=5, padx=(0,5))
+        ttk.Button(test_sound_frame, text="Phát Âm thanh", command=self.play_test_sound, bootstyle="success").grid(row=1, column=2, sticky="w", pady=5, padx=5)
+        test_sound_frame.grid_columnconfigure(0, weight=1)
+
+        gnss_frame = ttk.Frame(notebook, padding="10"); notebook.add(gnss_frame, text='GNSS')
         ttk.Button(gnss_frame, text="Phân loại Tốc độ Dịch chuyển...", command=self.open_classification_window, bootstyle="info").pack(pady=(5, 10))
+        
         water_level_frame = ttk.Frame(notebook, padding="10"); notebook.add(water_level_frame, text='Mực nước')
         add_labeled_entry_settings = lambda frame, label, row, textvariable: (ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=5), ttk.Entry(frame, textvariable=textvariable).grid(row=row, column=1, sticky="ew", pady=5, padx=5), frame.grid_columnconfigure(1, weight=1))
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var); add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
+        
         ttk.Button(self.settings_window, text="Lưu & Đóng", command=self.save_and_close_settings, bootstyle="success").pack(pady=10)
+    
+    # ... (Các hàm còn lại của GUI giữ nguyên)
     def open_classification_window(self):
         if self.classification_win and self.classification_win.winfo_exists(): self.classification_win.lift(); return
         self.classification_win = Toplevel(self.settings_window); self.classification_win.title("Bảng Phân Loại Tốc Độ Dịch Chuyển"); self.classification_win.geometry("850x420")
@@ -713,8 +777,7 @@ class MainController:
     def create_gui_window(self):
         if self.app_instance and self.app_instance.root.winfo_exists(): logger.info("Giao diện đã đang chạy."); self.app_instance.root.lift(); return
         logger.info("Đang khởi động giao diện người dùng..."); toplevel_window = Toplevel(self.root); self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
-    def on_gui_close(self, shutdown=False): 
-        self.app_instance = None;
+    def on_gui_close(self, shutdown=False): self.app_instance = None;
         if shutdown: self.command_queue.put('exit')
     def handle_shutdown(self):
         logger.info("Nhận lệnh thoát...");
