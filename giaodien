@@ -455,25 +455,84 @@ class Backend:
                 return None
         logger.warning(f"Không tìm thấy file âm thanh: {path}")
         return None
+    # <<< THAY THẾ TOÀN BỘ HÀM CŨ BẰNG HÀM MỚI NÀY >>>
     def update_and_reconnect(self, settings: dict):
-        self.broker, self.port = settings['broker'], int(settings['port'])
-        self.username, self.password = settings['username'], settings['password']
+    # --- 1. Xác định những gì đã thay đổi ---
+    
+    # Tạo một "dấu vân tay" cho các cài đặt ảnh hưởng đến shifting.py
+    # Dùng json.dumps để so sánh bảng phân loại một cách dễ dàng.
+        old_shifting_signature = (
+            f"{self.broker}-{self.port}-{self.username}-{self.password}-"
+            f"{'-'.join(sorted(self.gnss_topics))}-"
+            f"{json.dumps(self.gnss_speed_classification, sort_keys=True)}"
+        )
+
+    # Lấy danh sách topic nước cũ để so sánh
+        old_water_topics = self.water_topics
+
+    # --- 2. Cập nhật tất cả các cài đặt mới vào backend ---
+    
+        self.broker = settings['broker']
+        self.port = int(settings['port'])
+        self.username = settings['username']
+        self.password = settings['password']
         self.publish_topic = settings['publish']
         self.water_topics = [t.strip() for t in settings.get('water_topics', '').splitlines() if t.strip()]
         self.gnss_topics = [t.strip() for t in settings.get('gnss_topics', '').splitlines() if t.strip()]
-        self.subscribe_topics = self.water_topics # Chỉ sub topic nước, gnss do shifting xử lý
+        self.subscribe_topics = self.water_topics # led.py chỉ sub topic nước
         self.warning_threshold = float(settings['warning_threshold'])
         self.critical_threshold = float(settings['critical_threshold'])
+    
         new_sounds_dir = settings['sounds_dir']
         if new_sounds_dir != self.sounds_dir:
             self.sounds_dir = new_sounds_dir
             logger.info(f"Đường dẫn âm thanh đổi, tải lại từ: {self.sounds_dir}")
             self.setup_audio_mixer()
-        self.save_config()
-        if self.listening:
+
+    # --- 3. Tạo "dấu vân tay" mới và so sánh ---
+
+        new_shifting_signature = (
+            f"{self.broker}-{self.port}-{self.username}-{self.password}-"
+            f"{'-'.join(sorted(self.gnss_topics))}-"
+            f"{json.dumps(self.gnss_speed_classification, sort_keys=True)}"
+        )
+
+        needs_shifting_restart = (old_shifting_signature != new_shifting_signature)
+        needs_led_mqtt_reconnect = (set(old_water_topics) != set(self.water_topics))
+
+    # --- 4. Thực hiện các hành động cần thiết ---
+
+        self.save_config() # Luôn lưu cấu hình
+
+    # Nếu không ở chế độ Tự động, không cần làm gì thêm
+        if not self.listening:
+            logger.info("Cài đặt đã được lưu. Hệ thống đang ở chế độ Thủ công.")
+            return
+
+    # Chỉ khởi động lại khi thực sự cần thiết
+        if needs_shifting_restart:
+            logger.info("Phát hiện thay đổi trong cài đặt GNSS hoặc Broker. Đang khởi động lại toàn bộ hệ thống...")
+        # Cách đơn giản và an toàn nhất là khởi động lại toàn bộ
             self.toggle_off()
             time.sleep(1)
             self.toggle_on()
+        elif needs_led_mqtt_reconnect:
+            logger.info("Phát hiện thay đổi trong Topic Nước. Chỉ kết nối lại MQTT cho cảm biến nước...")
+        # Ngắt kết nối và kết nối lại chỉ client của led.py
+            try:
+                self.client.loop_stop()
+                self.client.disconnect()
+            except Exception: pass
+        
+        # Kết nối lại
+            try:
+                self.client.connect_async(self.broker, self.port, 60)
+                self.client.loop_start()
+            except Exception as e:
+                logger.error(f"Lỗi khi kết nối lại MQTT cho led.py: {e}")
+                self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
+        else:
+            logger.info("Các cài đặt không ảnh hưởng đến kết nối đã được cập nhật (ví dụ: ngưỡng, âm thanh). Không cần khởi động lại.")
     def load_config(self):
         if not os.path.exists(Constants.CONFIG_FILE):
             logger.warning(f"File cấu hình '{Constants.CONFIG_FILE}' không tồn tại. Tạo mặc định.")
@@ -757,7 +816,7 @@ class AppGUI:
         gnss_headers = ["Thời gian", "Tốc độ ngang\n(mm/s)", "Tốc độ đứng\n(mm/s)", "Hướng\n(°)", "Gia tốc ngang\n(mm/s²)", "Tổng dịch chuyển\n(m)", "Phân loại"]
         self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True)
         self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
-        self.sheet_gnss.set_options(font=("Arial", 10), header_font=("Arial", 9, "bold"), align="center")
+        self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
         self.sheet_gnss.column_width(column=0, width=80)
         self.sheet_gnss.column_width(column=6, width=120)
 
@@ -774,7 +833,7 @@ class AppGUI:
         overview_headers = ["Tên Cảm biến/Sự kiện", "Giá trị", "Trạng thái", "Thời gian"]
         self.sheet_overview = Sheet(sheet_frame, headers=overview_headers, show_row_index=True)
         self.sheet_overview.pack(fill=tk.BOTH, expand=True)
-        self.sheet_overview.set_options(font=("Arial", 10), header_font=("Arial", 10, "bold"), align="center")
+        self.sheet_overview.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
 
         ttk.Button(parent_tab, text="Lưu Bảng Tổng quan (CSV)", command=self.save_overview_to_csv, bootstyle="info-outline").grid(row=1, column=0, sticky='e', pady=5)
 
