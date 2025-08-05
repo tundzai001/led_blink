@@ -1,4 +1,4 @@
-# led.py (Phiên bản Cuối cùng v2 - Giao diện Gọn gàng với Cài đặt trong Cửa sổ riêng)
+# led.py (Phiên bản Cuối cùng v2 - Đã sửa lỗi lưu đường dẫn)
 import tkinter as tk
 from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
@@ -216,6 +216,7 @@ class Backend:
         self.warning_threshold = Constants.DEFAULT_WARN_THRESHOLD
         self.critical_threshold = Constants.DEFAULT_CRIT_THRESHOLD
         self.sounds_dir = Constants.DEFAULT_SOUNDS_DIR
+        self.test_sound_file_path = "" # <<< SỬA LỖI: Thêm thuộc tính để lưu đường dẫn file test
         self.mixer_initialized = False
         self.warning_sound, self.critical_sound, self.siren_sound = None, None, None
         self.decreasing_sound, self.safe_sound_1, self.safe_sound_2 = None, None, None
@@ -320,6 +321,7 @@ class Backend:
         self.publish_topic = settings['publish']; self.water_topics = [t.strip() for t in settings.get('water_topics', '').splitlines() if t.strip()]
         self.gnss_topics = [t.strip() for t in settings.get('gnss_topics', '').splitlines() if t.strip()]; self.subscribe_topics = self.water_topics
         self.warning_threshold = float(settings['warning_threshold']); self.critical_threshold = float(settings['critical_threshold'])
+        self.test_sound_file_path = settings['test_sound_path'] # <<< SỬA LỖI: Cập nhật thuộc tính backend
         new_sounds_dir = settings['sounds_dir']
         if new_sounds_dir != self.sounds_dir:
             self.sounds_dir = new_sounds_dir; logger.info(f"Đường dẫn âm thanh đổi, tải lại từ: {self.sounds_dir}"); self.setup_audio_mixer()
@@ -440,6 +442,7 @@ class Backend:
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", self.warning_threshold)
                 self.critical_threshold = settings_cfg.getfloat("critical_threshold", self.critical_threshold)
                 self.sounds_dir = settings_cfg.get("sounds_dir", self.sounds_dir)
+                self.test_sound_file_path = settings_cfg.get("test_sound_path", "") # <<< SỬA LỖI: Đọc giá trị từ file config
             if "GNSS_Classification" in self.config and self.config['GNSS_Classification']: self._load_gnss_from_config(self.config["GNSS_Classification"])
             else: self._reset_gnss_to_default()
             self.setup_audio_mixer()
@@ -460,9 +463,14 @@ class Backend:
     def save_config(self):
         try:
             self.config['MQTT'] = {'broker': self.broker, 'port': self.port, 'username': self.username, 'password': self.password, 'water_sub_topic': "\n".join(self.water_topics), 'gnss_sub_topic': "\n".join(self.gnss_topics), 'publish': self.publish_topic}
-            self.config['Settings'] = {'warning_threshold': self.warning_threshold, 'critical_threshold': self.critical_threshold, 'sounds_dir': self.sounds_dir}
+            self.config['Settings'] = {
+                'warning_threshold': self.warning_threshold, 
+                'critical_threshold': self.critical_threshold, 
+                'sounds_dir': self.sounds_dir,
+                'test_sound_path': self.test_sound_file_path # <<< SỬA LỖI: Thêm giá trị vào dictionary để lưu
+            }
             gnss_section = {}
-            for i, item in enumerate(self.gnss_speed_classification):
+            for i, item in enumerate(self.backend.gnss_speed_classification):
                 for key, value in item.items(): gnss_section[f'item_{i}_{key}'] = str(value)
             self.config['GNSS_Classification'] = gnss_section
             with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f: self.config.write(f)
@@ -1062,6 +1070,7 @@ class AppGUI:
         self.warning_threshold_var.set(str(self.backend.warning_threshold))
         self.critical_threshold_var.set(str(self.backend.critical_threshold))
         self.sounds_dir_var.set(self.backend.sounds_dir)
+        self.test_sound_path_var.set(self.backend.test_sound_file_path) # <<< SỬA LỖI: Tải giá trị vào biến giao diện
 
     def apply_and_save_config(self, show_message=True, parent_window=None, from_exit=False):
         # Kiểm tra xem cửa sổ cài đặt chính có đang mở không để lấy dữ liệu
@@ -1080,7 +1089,8 @@ class AppGUI:
             'publish': self.pub_topic_var.get(),
             'warning_threshold': self.warning_threshold_var.get(),
             'critical_threshold': self.critical_threshold_var.get(),
-            'sounds_dir': self.sounds_dir_var.get()
+            'sounds_dir': self.sounds_dir_var.get(),
+            'test_sound_path': self.test_sound_path_var.get() # <<< SỬA LỖI: Lấy giá trị từ biến giao diện
         }
         
         if is_main_settings_open:
