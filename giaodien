@@ -25,6 +25,7 @@ import atexit
 import subprocess
 import math
 import traceback
+from logging.handlers import TimedRotatingFileHandler
 
 # --- THIẾT LẬP MÔI TRƯỜNG VÀ CẢNH BÁO ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
@@ -42,16 +43,27 @@ except (ImportError, RuntimeError):
 
 
 # --- Cấu hình logging ---
+LOG_DIRECTORY = "sensor_monitor"
+os.makedirs(LOG_DIRECTORY, exist_ok=True)
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-# Ngăn việc thêm handler nhiều lần nếu script được reload
 if not logger.handlers:
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    file_handler = logging.FileHandler('sensor_monitor.log', encoding='utf-8')
+
+    log_file_path = os.path.join(LOG_DIRECTORY, 'sensor_monitor.log')
+    file_handler = TimedRotatingFileHandler(log_file_path, when='midnight', interval=1, backupCount=30, encoding='utf-8')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
+
+    error_log_file_path = os.path.join(LOG_DIRECTORY, 'sensor_monitor_error.log')
+    error_file_handler = TimedRotatingFileHandler(error_log_file_path, when='midnight', interval=1, backupCount=30, encoding='utf-8')
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(file_formatter)
+    logger.addHandler(error_file_handler)
+
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(console_formatter)
@@ -682,7 +694,7 @@ class AppGUI:
 
             # Nếu có bản ghi hợp lệ, thêm vào bảng
             if record:
-                self.sheet.insert_row(data=record)
+                self.sheet.insert_row(record)
                 last_row_index = self.sheet.get_total_rows() - 1
                 if last_row_index >= 0:
                     self.sheet.see(row=last_row_index)
