@@ -569,6 +569,127 @@ class Backend:
             else: time.sleep(30)
 
 # ==============================================================================
+# LỚP CỬA SỔ BIỂU ĐỒ
+# ==============================================================================
+class ChartWindow:
+    def __init__(self, parent_root, backend):
+        self.root = Toplevel(parent_root)
+        self.backend = backend
+        self.root.title("Biểu đồ Dữ liệu Cảm biến Nước")
+        self.root.geometry("900x650")
+        self.root.transient(parent_root)
+        
+        self.current_start_index = 0
+        self._is_updating_slider = False
+        self._slider_after_id = None
+        self.points_per_view = Constants.CHART_POINTS_PER_VIEW
+        self.CONVERSION_FACTORS = {"m": 1.0, "cm": 100.0, "mm": 1000.0, "ft": 3.28084}
+
+        self.create_widgets()
+        self.update_plot()
+        
+        # Gán lại hàm đóng cửa sổ
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def create_widgets(self):
+        top_frame = ttk.Frame(self.root, padding=(10, 5)); top_frame.pack(side=tk.TOP, fill=tk.X)
+        ttk.Label(top_frame, text="Chọn đơn vị:").pack(side=tk.LEFT, padx=(0, 5))
+        self.unit_selector = ttk.Combobox(top_frame, state="readonly", values=list(self.CONVERSION_FACTORS.keys()))
+        self.unit_selector.set("m"); self.unit_selector.pack(side=tk.LEFT, padx=5)
+        self.unit_selector.bind("<<ComboboxSelected>>", lambda e: self.update_plot())
+        self.auto_follow_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top_frame, text="Tự động theo dõi", variable=self.auto_follow_var, command=self.on_auto_follow_toggle).pack(side=tk.LEFT, padx=20)
+        chart_frame = ttk.Frame(self.root, padding=(10, 5)); chart_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.fig = Figure(figsize=(9, 4.5), dpi=100)
+        self.ax = self.fig.add_subplot(111); self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
+        self.canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        slider_frame = ttk.Frame(self.root, padding=10); slider_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self.position_var = tk.DoubleVar()
+        self.position_scale = ttk.Scale(slider_frame, from_=0, to=100, orient=tk.HORIZONTAL, variable=self.position_var, command=self.on_slider_change)
+        self.position_scale.pack(side=tk.TOP, fill=tk.X, expand=True)
+        self.info_label = ttk.Label(slider_frame, text="Tổng điểm: 0 | Hiển thị: 0-0", font=("Arial", 9))
+        self.info_label.pack(side=tk.TOP, pady=(5, 0))
+
+    def on_close(self):
+        if self._slider_after_id: self.root.after_cancel(self._slider_after_id)
+        plt.close(self.fig)
+        self.root.destroy()
+        # Quan trọng: báo cho AppGUI biết cửa sổ đã đóng
+        app_gui_instance = self.root.master.app_instance 
+        if app_gui_instance:
+            app_gui_instance.chart_window = None
+    
+    def update_plot(self):
+        if not self.root.winfo_exists(): return
+        all_data = list(self.backend.plot_data_points); total_points = len(all_data)
+        start, end = self._update_slider_and_indices(total_points); self.ax.clear()
+        if not all_data[start:end]:
+            self._setup_plot_style()
+            self.ax.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', transform=self.ax.transAxes, fontsize=16, color='gray')
+            self.info_label.config(text="Tổng điểm: 0 | Hiển thị: 0-0")
+        else:
+            indices, values, times, unit, warn_thresh, crit_thresh = self._prepare_plot_data(all_data[start:end], start)
+            self._setup_plot_style(unit); self._draw_plot_elements(indices, values, warn_thresh, crit_thresh)
+            self._configure_plot_axes(start, end, total_points, indices, times)
+        self.canvas.draw()
+    
+    def _update_slider_and_indices(self, total_points):
+        max_start_idx = max(0, total_points - self.points_per_view)
+        if total_points <= self.points_per_view: self.position_scale.config(state="disabled"); self.current_start_index = 0
+        else:
+            self.position_scale.config(state="normal")
+            if self.auto_follow_var.get(): self.current_start_index = max_start_idx
+            else: self.current_start_index = min(self.current_start_index, max_start_idx)
+        self._is_updating_slider = True
+        self.position_var.set((self.current_start_index / max_start_idx) * 100 if max_start_idx > 0 else 100)
+        self._is_updating_slider = False
+        return self.current_start_index, min(total_points, self.current_start_index + self.points_per_view)
+    
+    def _prepare_plot_data(self, data_slice, start_index):
+        unit = self.unit_selector.get(); conversion_factor = self.CONVERSION_FACTORS.get(unit, 1.0)
+        return (range(start_index, start_index + len(data_slice)), [i[1] * conversion_factor for i in data_slice], [i[0] for i in data_slice], unit,
+                self.backend.warning_threshold * conversion_factor, self.backend.critical_threshold * conversion_factor)
+    
+    def _setup_plot_style(self, unit='Giá trị'):
+        self.ax.set_title('Dữ liệu Cảm biến Theo Thời Gian', fontsize=14, fontweight='bold')
+        self.ax.set_xlabel('Thời gian', fontsize=12); self.ax.set_ylabel(f'Giá trị ({unit})', fontsize=12)
+        self.ax.grid(True, which='major', linestyle='--', alpha=0.6)
+    
+    def _draw_plot_elements(self, indices, values, warning_thresh, critical_thresh):
+        self.ax.plot(indices, values, color='gray', linestyle='-', linewidth=1, alpha=0.5, zorder=3)
+        colors = ['green' if v < warning_thresh else 'orange' if v < critical_thresh else 'red' for v in values]
+        self.ax.scatter(indices, values, c=colors, s=30, zorder=5)
+        self.ax.axhline(y=warning_thresh, color='gold', linestyle='--', linewidth=2, label=f'Ngưỡng Cảnh báo ({warning_thresh:.2f} {self.unit_selector.get()})')
+        self.ax.axhline(y=critical_thresh, color='darkorange', linestyle='--', linewidth=2, label=f'Ngưỡng Nguy hiểm ({critical_thresh:.2f} {self.unit_selector.get()})')
+    
+    def _configure_plot_axes(self, start, end, total_points, indices, times):
+        self.ax.set_xlim(left=start - 0.5, right=start + self.points_per_view - 0.5)
+        num_ticks = min(len(indices), 8)
+        if num_ticks > 1:
+            tick_indices = np.linspace(0, len(indices) - 1, num_ticks, dtype=int)
+            self.ax.set_xticks([indices[i] for i in tick_indices])
+            self.ax.set_xticklabels([times[i].strftime('%H:%M:%S') for i in tick_indices], rotation=25, ha='right')
+        elif indices:
+            self.ax.set_xticks(indices); self.ax.set_xticklabels([t.strftime('%H:%M:%S') for t in times])
+        self.ax.legend(); self.info_label.config(text=f"Tổng điểm: {total_points} | Hiển thị: {start+1}-{end}")
+        self.fig.tight_layout()
+    
+    def on_auto_follow_toggle(self):
+        if self.auto_follow_var.get(): self.update_plot()
+    
+    def on_slider_change(self, value_str):
+        if self._is_updating_slider: return
+        if self._slider_after_id: self.root.after_cancel(self._slider_after_id)
+        self._slider_after_id = self.root.after(100, lambda: self._perform_slider_update(float(value_str)))
+    
+    def _perform_slider_update(self, value):
+        self._slider_after_id = None; self.auto_follow_var.set(False)
+        total_points = len(self.backend.plot_data_points)
+        if total_points > self.points_per_view:
+            self.current_start_index = int((value / 100) * (total_points - self.points_per_view))
+            self.update_plot()
+
+# ==============================================================================
 # LỚP GIAO DIỆN NGƯỜI DÙNG (GUI)
 # ==============================================================================
 class AppGUI:
@@ -580,7 +701,6 @@ class AppGUI:
         self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
         self.main_settings_window, self.chart_window, self.settings_window, self.classification_win = None, None, None, None
         
-        # Biến cho các cửa sổ cài đặt
         self.broker_var = tk.StringVar(); self.port_var = tk.StringVar()
         self.user_var = tk.StringVar(); self.pass_var = tk.StringVar()
         self.pub_topic_var = tk.StringVar()
@@ -595,6 +715,7 @@ class AppGUI:
         self.load_initial_data_to_vars()
         self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+        self.root.app_instance = self
     
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10)
@@ -608,21 +729,17 @@ class AppGUI:
     def create_left_panel(self, parent):
         left = ttk.Frame(parent)
         left.grid(row=0, column=0, sticky="ns", padx=(0, 15))
-
         control_frame = ttk.LabelFrame(left, text="Điều khiển Chính", padding=(10, 5))
         control_frame.pack(fill=tk.X, expand=False, pady=(0, 10))
         control_frame.grid_columnconfigure((0, 1), weight=1)
-        
         ttk.Button(control_frame, text="Tự động (ON)", command=self.backend.toggle_on, bootstyle="success").grid(row=0, column=0, sticky='ew', padx=2, pady=2)
         ttk.Button(control_frame, text="Thủ công (OFF)", command=self.backend.toggle_off, bootstyle="danger").grid(row=0, column=1, sticky='ew', padx=2, pady=2)
-
         settings_frame = ttk.LabelFrame(left, text="Cài đặt & Chức năng", padding=10)
         settings_frame.pack(fill=tk.X, expand=False, pady=10)
         ttk.Button(settings_frame, text="Cài đặt Hệ thống & MQTT", command=self.open_main_settings_window, bootstyle="primary").pack(fill=tk.X, pady=2)
         ttk.Button(settings_frame, text="Cài đặt Nâng cao (Âm thanh, GNSS...)", command=self.open_advanced_settings_window, bootstyle="secondary").pack(fill=tk.X, pady=2)
         ttk.Button(settings_frame, text="Kiểm tra Còi", command=self.on_test_siren_click).pack(fill=tk.X, pady=(10, 2))
         ttk.Button(settings_frame, text="Xóa Toàn bộ Dữ liệu", command=self.clear_all_gui_data, bootstyle="warning").pack(fill=tk.X, pady=2)
-
         ttk.Button(left, text="Thoát Chương trình", command=self.exit_program_graceful, bootstyle="secondary-outline").pack(side=tk.BOTTOM, fill=tk.X, pady=(15,0))
 
     def create_right_panel(self, parent):
@@ -743,7 +860,7 @@ class AppGUI:
         for data_type, item in self.backend.get_gui_updates():
             if data_type == "clear_all":
                 self.sheet_overview.set_sheet_data(data=[]); self.sheet_gnss.set_sheet_data(data=[]); self.sheet_water.set_sheet_data(data=[])
-                if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.clear_chart_data()
+                if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.clear_chart_data()
                 logger.info("GUI đã nhận tín hiệu và xóa tất cả các bảng.")
             elif data_type == "water_sensor": self.update_water_tab(item)
             elif data_type == "overview_log": self.update_overview_tab(item)
@@ -762,7 +879,7 @@ class AppGUI:
                     if item.get("event_confirmed"): self.backend.alert_manager.trigger_critical_event_alarm()
             elif data_type == "gnss_analysis_record": self.sheet_gnss.insert_row(item)
         self.update_status_label()
-        if self.chart_window and self.chart_window.winfo_exists(): self.chart_window.update_plot()
+        if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.update_plot()
         self.root.after(250, self.periodic_update)
 
     def update_gnss_tab(self, item_data):
@@ -875,9 +992,15 @@ class AppGUI:
         self.sounds_dir_var.set(self.backend.sounds_dir)
 
     def apply_and_save_config(self, show_message=True, parent_window=None, from_exit=False):
+        # Kiểm tra xem cửa sổ cài đặt chính có đang mở không để lấy dữ liệu
+        is_main_settings_open = self.main_settings_window and self.main_settings_window.winfo_exists()
+        
         if parent_window is None and not from_exit:
-            messagebox.showerror("Lỗi", "Không tìm thấy cửa sổ cài đặt để lấy giá trị.")
-            return False
+             # Nếu không có cửa sổ cha và không phải lúc thoát -> lỗi
+            if not is_main_settings_open:
+                messagebox.showerror("Lỗi", "Không tìm thấy cửa sổ cài đặt để lấy giá trị.")
+                return False
+            parent_window = self.main_settings_window
         
         settings = {
             'broker': self.broker_var.get(), 'port': self.port_var.get(),
@@ -888,8 +1011,7 @@ class AppGUI:
             'sounds_dir': self.sounds_dir_var.get()
         }
         
-        # Chỉ lấy giá trị từ text box nếu cửa sổ đang mở
-        if self.main_settings_window and self.main_settings_window.winfo_exists():
+        if is_main_settings_open:
             settings['water_topics'] = self.water_topic_text.get("1.0", "end-1c").strip()
             settings['gnss_topics'] = self.gnss_topic_text.get("1.0", "end-1c").strip()
         else:
@@ -988,8 +1110,7 @@ class AppGUI:
 
         ttk.Button(main_frame, text="Lưu & Áp dụng", command=save_and_close, bootstyle="primary").pack(side=tk.RIGHT, padx=5, pady=10)
         ttk.Button(main_frame, text="Hủy", command=self.main_settings_window.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
-
-    # ... (Các hàm còn lại như open_advanced_settings_window, show_chart_window,... giữ nguyên)
+    
     def open_advanced_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.lift(); return
@@ -1014,10 +1135,110 @@ class AppGUI:
         add_labeled_entry_settings = lambda frame, label, row, textvariable: (ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=5, padx=5), ttk.Entry(frame, textvariable=textvariable).grid(row=row, column=1, sticky="ew", pady=5, padx=5), frame.grid_columnconfigure(1, weight=1))
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Cảnh Báo (m):", 0, self.warning_threshold_var)
         add_labeled_entry_settings(water_level_frame, "Ngưỡng Nguy Hiểm (m):", 1, self.critical_threshold_var)
-        def save_and_close():
+        def save_and_close_adv():
             if self.apply_and_save_config(parent_window=self.settings_window): self.settings_window.destroy()
-        ttk.Button(self.settings_window, text="Lưu & Đóng", command=save_and_close, bootstyle="success").pack(pady=10)
+        ttk.Button(self.settings_window, text="Lưu & Đóng", command=save_and_close_adv, bootstyle="success").pack(pady=10)
 
+    def select_sounds_directory(self):
+        initial_dir = os.path.dirname(self.sounds_dir_var.get())
+        if not os.path.isdir(initial_dir): initial_dir = os.path.dirname(os.path.abspath(__file__))
+        directory = filedialog.askdirectory(title="Chọn Thư mục chứa File Âm thanh", initialdir=initial_dir, parent=self.settings_window)
+        if directory: self.sounds_dir_var.set(directory)
+    
+    def select_test_sound_file(self):
+        filepath = filedialog.askopenfilename(parent=self.settings_window,title="Chọn file âm thanh để kiểm tra",initialdir=self.sounds_dir_var.get(),filetypes=[("Sound Files", "*.mp3 *.wav"), ("All files", "*.*")])
+        if filepath: self.test_sound_path_var.set(filepath)
+    
+    def play_test_sound(self):
+        filepath = self.test_sound_path_var.get()
+        if not filepath:
+            messagebox.showwarning("Chưa chọn file", "Vui lòng chọn một file âm thanh để phát.", parent=self.settings_window); return
+        result = self.backend.test_specific_sound(filepath)
+        if result == "OK": messagebox.showinfo("Đang phát", f"Đang gửi lệnh phát file:\n{os.path.basename(filepath)}", parent=self.settings_window)
+        elif result == "File not found": messagebox.showerror("Lỗi", "Không tìm thấy file âm thanh. Vui lòng chọn lại.", parent=self.settings_window)
+        else: messagebox.showerror("Lỗi", "Hệ thống âm thanh (mixer) chưa sẵn sàng hoặc không phải môi trường Pi.", parent=self.settings_window)
+    
+    def open_classification_window(self):
+        if self.classification_win and self.classification_win.winfo_exists():
+            self.classification_win.lift(); return
+        self.classification_win = Toplevel(self.settings_window)
+        self.classification_win.title("Bảng Phân Loại Tốc Độ Dịch Chuyển")
+        self.classification_win.geometry("500x420"); self.classification_win.transient(self.settings_window); self.classification_win.grab_set()
+        main_frame = ttk.Frame(self.classification_win, padding=10); main_frame.pack(fill="both", expand=True)
+        classification_frame = ttk.LabelFrame(main_frame, text="Bảng phân loại", padding=10)
+        classification_frame.pack(fill="both", expand=True, pady=(0, 10))
+        columns = ("Phân loại", "mm/giây (Ngưỡng tối thiểu)")
+        self.gnss_tree = ttk.Treeview(classification_frame, columns=columns, show="headings", height=10)
+        self.gnss_tree.heading(columns[0], text=columns[0]); self.gnss_tree.column(columns[0], width=200, anchor="w")
+        self.gnss_tree.heading(columns[1], text=columns[1]); self.gnss_tree.column(columns[1], width=200, anchor="center")
+        tree_scrollbar = ttk.Scrollbar(classification_frame, orient="vertical", command=self.gnss_tree.yview)
+        self.gnss_tree.configure(yscrollcommand=tree_scrollbar.set)
+        self.gnss_tree.pack(side="left", fill="both", expand=True); tree_scrollbar.pack(side="right", fill="y")
+        self.load_gnss_classification_data()
+        control_frame = ttk.Frame(main_frame); control_frame.pack(fill="x", pady=(10, 0))
+        ttk.Button(control_frame, text="Chỉnh sửa", command=self.edit_gnss_classification).pack(side="left", padx=(0, 5))
+        ttk.Button(control_frame, text="Thêm mới", command=self.add_gnss_classification).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="Xóa", command=self.delete_gnss_classification).pack(side="left", padx=5)
+        ttk.Button(control_frame, text="Khôi phục mặc định", command=self.reset_gnss_classification, bootstyle="danger").pack(side="left", padx=5)
+
+    def load_gnss_classification_data(self):
+        for item in self.gnss_tree.get_children(): self.gnss_tree.delete(item)
+        sorted_data = sorted(self.backend.gnss_speed_classification, key=lambda x: float(x.get('mm_giay', 0)), reverse=True)
+        self.backend.gnss_speed_classification = sorted_data
+        for i, classification in enumerate(sorted_data):
+            values = (classification.get("name", ""), classification.get("mm_giay", ""))
+            self.gnss_tree.insert("", "end", values=values, tags=(str(i),))
+
+    def edit_gnss_classification(self):
+        selected = self.gnss_tree.selection()
+        if not selected: messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để chỉnh sửa.", parent=self.classification_win); return
+        self.open_classification_editor(int(self.gnss_tree.item(selected[0])["tags"][0]))
+
+    def add_gnss_classification(self):
+        self.backend.gnss_speed_classification.append({"name": "Phân loại Mới", "mm_giay": "0.0"})
+        self.load_gnss_classification_data(); self.backend.save_config()
+
+    def delete_gnss_classification(self):
+        selected = self.gnss_tree.selection()
+        if not selected: messagebox.showwarning("Cảnh báo", "Vui lòng chọn một mục để xóa.", parent=self.classification_win); return
+        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn xóa mục này?", parent=self.classification_win):
+            del self.backend.gnss_speed_classification[int(self.gnss_tree.item(selected[0])["tags"][0])]
+            self.load_gnss_classification_data(); self.backend.save_config()
+
+    def reset_gnss_classification(self):
+        if messagebox.askyesno("Xác nhận", "Bạn có chắc muốn khôi phục bảng về giá trị mặc định?", parent=self.classification_win):
+            self.backend._reset_gnss_to_default(); self.load_gnss_classification_data(); self.backend.save_config()
+
+    def open_classification_editor(self, index):
+        editor_window = Toplevel(self.classification_win)
+        editor_window.title("Chỉnh sửa phân loại tốc độ"); editor_window.geometry("400x150"); editor_window.transient(self.classification_win); editor_window.grab_set()
+        classification = self.backend.gnss_speed_classification[index]; vars_dict = {}
+        fields = [("Tên phân loại:", "name"), ("Ngưỡng tối thiểu (mm/giây):", "mm_giay")]
+        main_frame = ttk.Frame(editor_window, padding="10"); main_frame.pack(fill="both", expand=True)
+        for i, (label, key) in enumerate(fields):
+            vars_dict[key] = tk.StringVar(value=str(classification.get(key, '')))
+            ttk.Label(main_frame, text=label).grid(row=i, column=0, sticky="w", pady=5, padx=5)
+            entry = ttk.Entry(main_frame, textvariable=vars_dict[key]); entry.grid(row=i, column=1, sticky="ew", pady=5, padx=5)
+        main_frame.grid_columnconfigure(1, weight=1)
+        button_frame = ttk.Frame(editor_window); button_frame.pack(fill="x", pady=10)
+        def save_changes():
+            try:
+                if float(vars_dict['mm_giay'].get()) < 0: raise ValueError
+            except ValueError: messagebox.showerror("Lỗi", "Ngưỡng phải là một số không âm.", parent=editor_window); return
+            for key, var in vars_dict.items(): classification[key] = var.get().strip()
+            self.load_gnss_classification_data(); self.backend.save_config(); editor_window.destroy()
+        ttk.Button(button_frame, text="Lưu", command=save_changes).pack(side="left", padx=10, expand=True, fill='x')
+        ttk.Button(button_frame, text="Hủy", command=editor_window.destroy).pack(side="right", padx=10, expand=True, fill='x')
+
+
+    def show_chart_window(self):
+        if self.chart_window and self.chart_window.root.winfo_exists():
+            self.chart_window.root.lift()
+            return
+    # Tạo một đối tượng của lớp ChartWindow mới
+        self.chart_window = ChartWindow(self.root, self.backend)
+        
+    def clear_chart_data(self): self.current_start_index = 0; self.auto_follow_var.set(True); self.update_plot()
 # ===========================
 # KHỐI ĐIỀU KHIỂN CHÍNH
 # ===========================
