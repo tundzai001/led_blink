@@ -819,7 +819,71 @@ class AppGUI:
         self.lt_canvas = FigureCanvasTkAgg(self.lt_fig, master=chart_frame)
         self.lt_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         ttk.Button(parent_tab, text="Tải và Phân tích Dữ liệu Dài hạn", command=self.run_long_term_analysis, bootstyle="primary").grid(row=2, column=0, sticky="e", pady=10)
+        
+    def run_long_term_analysis(self):
+        log_path = os.path.join("shifting", "long_term_displacement.jsonl")
+        if not os.path.exists(log_path):
+            messagebox.showwarning("Không tìm thấy dữ liệu", "Không tìm thấy file log dài hạn. Hệ thống cần chạy qua ít nhất một ngày để tạo dữ liệu.", parent=self.root)
+            return
 
+        checkpoints = []
+        try:
+            with open(log_path, "r", encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        checkpoints.append(json.loads(line))
+        except Exception as e:
+            messagebox.showerror("Lỗi đọc file", f"Không thể đọc hoặc phân tích file log dài hạn:\n{e}", parent=self.root)
+            return
+
+        if len(checkpoints) < 2:
+            messagebox.showinfo("Chưa đủ dữ liệu", "Cần ít nhất 2 điểm chốt (2 ngày) để thực hiện phân tích dài hạn.", parent=self.root)
+            return
+
+        # Sắp xếp các điểm theo thời gian
+        checkpoints.sort(key=lambda p: p["timestamp"])
+        
+        start_point = checkpoints[0]
+        start_time = datetime.fromtimestamp(start_point["timestamp"])
+        
+        # Tính toán dịch chuyển tích lũy
+        timestamps = []
+        displacements_mm = []
+        for cp in checkpoints:
+            current_time = datetime.fromtimestamp(cp["timestamp"])
+            days_since_start = (current_time - start_time).total_seconds() / (24 * 3600)
+            
+            p1 = {"lat": start_point["lat"], "lon": start_point["lon"], "h": start_point["h"]}
+            p2 = {"lat": cp["lat"], "lon": cp["lon"], "h": cp["h"]}
+            
+            disp_m = haversine_3d(p1, p2)
+            
+            timestamps.append(days_since_start)
+            displacements_mm.append(disp_m * 1000)
+
+        # Cập nhật các thông số
+        total_days = timestamps[-1]
+        total_disp_mm = displacements_mm[-1]
+        
+        self.lt_total_days_var.set(f"Số ngày giám sát: {total_days:.1f} ngày")
+        self.lt_total_disp_var.set(f"Tổng dịch chuyển: {total_disp_mm:.2f} mm")
+
+        if total_days > 0:
+            speed_mm_per_year = (total_disp_mm / total_days) * 365.25
+            self.lt_avg_speed_var.set(f"Tốc độ trung bình: {speed_mm_per_year:.2f} mm/năm")
+        else:
+            self.lt_avg_speed_var.set("Tốc độ trung bình: ---")
+            
+        # Vẽ biểu đồ
+        self.lt_ax.clear()
+        self.lt_ax.plot(timestamps, displacements_mm, marker='o', linestyle='-', color='b')
+        self.lt_ax.set_title("Dịch chuyển Tích lũy Theo Thời gian", fontsize=14)
+        self.lt_ax.set_xlabel("Số ngày kể từ khi bắt đầu giám sát", fontsize=12)
+        self.lt_ax.set_ylabel("Tổng dịch chuyển (mm)", fontsize=12)
+        self.lt_ax.grid(True)
+        self.lt_fig.tight_layout()
+        self.lt_canvas.draw()
+    
     def create_gnss_dashboard(self, parent):
         parent.grid_columnconfigure(1, weight=1)
         self.compass_canvas = tk.Canvas(parent, width=150, height=150, bg='white', highlightthickness=0)
