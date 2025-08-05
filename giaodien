@@ -804,7 +804,7 @@ class AppGUI:
         parent_tab.grid_rowconfigure(1, weight=1)
         parent_tab.grid_columnconfigure(0, weight=1)
 
-        # 1. Bảng điều khiển
+    # 1. Bảng điều khiển
         dashboard_frame = ttk.LabelFrame(parent_tab, text="Bảng điều khiển Giám sát Dịch chuyển", padding=10)
         dashboard_frame.grid(row=0, column=0, sticky="ew", pady=5)
         self.create_gnss_dashboard(dashboard_frame)
@@ -816,13 +816,14 @@ class AppGUI:
         gnss_headers = ["Thời gian", "Tốc độ ngang\n(mm/s)", "Tốc độ đứng\n(mm/s)", "Hướng\n(°)", "Gia tốc ngang\n(mm/s²)", "Tổng dịch chuyển\n(m)", "Phân loại"]
         self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True)
         self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
+        # SỬA LỖI Ở ĐÂY
         self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
         self.sheet_gnss.column_width(column=0, width=80)
         self.sheet_gnss.column_width(column=6, width=120)
 
         # 3. Nút lưu CSV cho tab này
         ttk.Button(parent_tab, text="Lưu Bảng Phân tích GNSS (CSV)", command=self.save_gnss_to_csv, bootstyle="info-outline").grid(row=2, column=0, sticky='e', pady=5)
-        
+     
     def create_overview_tab(self, parent_tab):
         parent_tab.grid_rowconfigure(0, weight=1)
         parent_tab.grid_columnconfigure(0, weight=1)
@@ -833,10 +834,10 @@ class AppGUI:
         overview_headers = ["Tên Cảm biến/Sự kiện", "Giá trị", "Trạng thái", "Thời gian"]
         self.sheet_overview = Sheet(sheet_frame, headers=overview_headers, show_row_index=True)
         self.sheet_overview.pack(fill=tk.BOTH, expand=True)
+        # SỬA LỖI Ở ĐÂY
         self.sheet_overview.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
 
-        ttk.Button(parent_tab, text="Lưu Bảng Tổng quan (CSV)", command=self.save_overview_to_csv, bootstyle="info-outline").grid(row=1, column=0, sticky='e', pady=5)
-
+    ttk.Button(parent_tab, text="Lưu Bảng Tổng quan (CSV)", command=self.save_overview_to_csv, bootstyle="info-outline").grid(row=1, column=0, sticky='e', pady=5)
     def create_gnss_dashboard(self, parent):
         parent.grid_columnconfigure(1, weight=1)
         # La bàn
