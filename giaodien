@@ -497,19 +497,27 @@ class Backend:
         try: GPIO.output(Constants.SIREN_RELAY_PIN, GPIO.LOW); logger.info("Rơ-le còi báo động đã được NGẮT (OFF).")
         except Exception as e: logger.error(f"Lỗi ngắt rơ-le: {e}")
 
-    def on_connect(self, client, userdata, flags, rc, properties):
+    def on_connect(self, client, userdata, flags, reason_code, properties):
         if self.exiting: return
-        rc = rc if isinstance(rc, int) else rc.rc
-        if rc == 0:
-            logger.info("MQTT Connected successfully."); self.status_text, self.status_color = "Trạng thái: TỰ ĐỘNG", "green"
+    # Luôn truy cập thuộc tính .value của đối tượng ReasonCode
+        if reason_code.value == 0:
+            logger.info("MQTT Connected successfully.")
+            self.status_text, self.status_color = "Trạng thái: TỰ ĐỘNG", "green"
             if self.subscribe_topics:
-                for t in self.subscribe_topics: client.subscribe(t); logger.info(f"Subscribed: {t}")
-            else: logger.warning("Không có topic nước nào để subscribe.")
+                for t in self.subscribe_topics:
+                    client.subscribe(t)
+                    logger.info(f"Subscribed: {t}")
+            else:
+                logger.warning("Không có topic nước nào để subscribe.")
         else:
-            logger.error(f"Failed to connect to MQTT, return code {rc}"); self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"; self.listening = False
-
-    def on_disconnect(self, client, userdata, rc, properties):
-        if not self.exiting and self.listening: logger.warning("Mất kết nối MQTT..."); self.status_text, self.status_color = "Trạng thái: MẤT KẾT NỐI", "orange"
+            logger.error(f"Failed to connect to MQTT, return code {reason_code.value}")
+            self.status_text, self.status_color = "Trạng thái: LỖI KẾT NỐI", "red"
+            self.listening = False
+    
+    def on_disconnect(self, client, userdata, reason_code, properties):
+        if not self.exiting and self.listening:
+            logger.warning("Mất kết nối MQTT...")
+            self.status_text, self.status_color = "Trạng thái: MẤT KẾT NỐI", "orange"
     
     def get_gui_updates(self):
         updates = []
@@ -819,7 +827,7 @@ class AppGUI:
         self.lt_canvas = FigureCanvasTkAgg(self.lt_fig, master=chart_frame)
         self.lt_canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         ttk.Button(parent_tab, text="Tải và Phân tích Dữ liệu Dài hạn", command=self.run_long_term_analysis, bootstyle="primary").grid(row=2, column=0, sticky="e", pady=10)
-        
+
     def run_long_term_analysis(self):
         log_path = os.path.join("shifting", "long_term_displacement.jsonl")
         if not os.path.exists(log_path):
