@@ -1,4 +1,3 @@
-# led.py (Phiên bản Cuối cùng v2 - Đã sửa lỗi lưu đường dẫn)
 import tkinter as tk
 from tkinter import messagebox, filedialog, Toplevel
 import ttkbootstrap as ttk
