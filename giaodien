@@ -1024,17 +1024,37 @@ class AppGUI:
         return errors
 
     def update_status_label(self):
+        # Ưu tiên hiển thị các trạng thái tạm thời (lỗi, đang thu thập)
         if self.backend.temp_status_text:
-            text_to_show, color_to_show = self.backend.temp_status_text, "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
-        else:
+            text_to_show = self.backend.temp_status_text
+            color_to_show = "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
+        
+        # Nếu không có trạng thái tạm thời, hiển thị trạng thái hoạt động chính
+        elif self.backend.listening:
+            # Nếu đang ở chế độ TỰ ĐỘNG
             am = self.backend.alert_manager
             active_status, w_lv, g_lv = am.active_alert_name, am.water_sm.current_level, am.gnss_sm.current_level
-            text_to_show = f"Trạng thái: {active_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
+            
+            # Xây dựng chuỗi trạng thái chi tiết
+            text_to_show = f"TỰ ĐỘNG | Cảnh báo: {active_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
+            
+            # Quyết định màu sắc dựa trên mức độ ưu tiên của cảnh báo
             active_priority = am.ALERT_PRIORITY.get(active_status, 0)
-            if active_priority >= 7: color_to_show = "red"
-            elif active_priority >= 3: color_to_show = "orange"
-            else: color_to_show = "green" if self.backend.listening else "darkgray"
-        if self.status_label.cget("text") != text_to_show: self.status_label.config(text=text_to_show, foreground=color_to_show)
+            if active_priority >= 7: # Mức CRITICAL trở lên
+                color_to_show = "red"
+            elif active_priority >= 3: # Mức WARN trở lên
+                color_to_show = "orange"
+            else: # Mức SAFE
+                color_to_show = "green"
+        
+        else:
+            # Nếu không phải listening, hiển thị trạng thái kết nối chung (THỦ CÔNG, LỖI, MẤT KẾT NỐI)
+            text_to_show = self.backend.status_text
+            color_to_show = self.backend.status_color
+
+        # Chỉ cập nhật giao diện nếu có sự thay đổi để tối ưu hiệu năng
+        if self.status_label.cget("text") != text_to_show:
+            self.status_label.config(text=text_to_show, foreground=color_to_show)
 
     def on_test_siren_click(self):
         if not self.backend.test_siren_relay(): messagebox.showwarning("Không thể thực hiện", "Kiểm tra còi thất bại. Xem log để biết chi tiết.", parent=self.root)
