@@ -779,7 +779,7 @@ class AppGUI:
         sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=1, column=0, sticky="nsew", pady=(10,0))
         gnss_headers = ["Thời gian", "Tốc độ ngang\n(mm/s)", "Tốc độ đứng\n(mm/s)", "Hướng\n(°)", "Gia tốc ngang\n(mm/s²)", "Tổng dịch chuyển\n(m)", "Phân loại"]
         self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True); self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
-        self.sheet_gnss.set_options(font=("Arial", 10), header_font=("Arial", 9, "bold"), align="center")
+        self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
         self.sheet_gnss.column_width(column=0, width=80); self.sheet_gnss.column_width(column=6, width=120)
         ttk.Button(parent_tab, text="Lưu Bảng Phân tích GNSS (CSV)", command=self.save_gnss_to_csv, bootstyle="info-outline").grid(row=2, column=0, sticky='e', pady=5)
 
@@ -788,7 +788,7 @@ class AppGUI:
         sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=0, column=0, sticky="nsew")
         water_headers = ["Tên Cảm biến", "Giá trị (m)", "Trạng thái", "Thời gian"]
         self.sheet_water = Sheet(sheet_frame, headers=water_headers, show_row_index=True); self.sheet_water.pack(fill=tk.BOTH, expand=True)
-        self.sheet_water.set_options(font=("Arial", 10), header_font=("Arial", 10, "bold"), align="center")
+        self.sheet_water.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
         button_frame = ttk.Frame(parent_tab); button_frame.grid(row=1, column=0, sticky='e', pady=5)
         ttk.Button(button_frame, text="Xem Biểu Đồ", command=self.show_chart_window, bootstyle="info-outline").pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Lưu Bảng Nước (CSV)", command=self.save_water_to_csv, bootstyle="info-outline").pack(side=tk.LEFT)
@@ -797,7 +797,7 @@ class AppGUI:
         parent_tab.grid_rowconfigure(0, weight=1); parent_tab.grid_columnconfigure(0, weight=1)
         sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=0, column=0, sticky="nsew")
         overview_headers = ["Thời gian", "Nguồn", "Thông điệp", "Trạng thái"]; self.sheet_overview = Sheet(sheet_frame, headers=overview_headers, show_row_index=True)
-        self.sheet_overview.pack(fill=tk.BOTH, expand=True); self.sheet_overview.set_options(font=("Arial", 10), header_font=("Arial", 10, "bold"), align="center")
+        self.sheet_overview.pack(fill=tk.BOTH, expand=True); self.sheet_overview.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 10, "bold"), align="center")
         ttk.Button(parent_tab, text="Lưu Nhật ký Tổng quan (CSV)", command=self.save_overview_to_csv, bootstyle="info-outline").grid(row=1, column=0, sticky='e', pady=5)
 
     def create_long_term_tab(self, parent_tab):
