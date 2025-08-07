@@ -772,40 +772,97 @@ class AppGUI:
         for key, text in tabs.items(): setattr(self, f"{key}_tab", ttk.Frame(self.notebook, padding=5)); self.notebook.add(getattr(self, f"{key}_tab"), text=text)
         self.create_gnss_tab(self.gnss_tab); self.create_water_tab(self.water_tab); self.create_overview_tab(self.overview_tab); self.create_long_term_tab(self.long_term_tab)
     
-    def create_gnss_tab(self, parent_tab):
-        parent_tab.grid_rowconfigure(1, weight=1); parent_tab.grid_columnconfigure(0, weight=1)
-        dashboard_frame = ttk.Frame(parent_tab); dashboard_frame.grid(row=0, column=0, sticky="ew", pady=5)
-        dashboard_frame.grid_columnconfigure(1, weight=1)
-        belief_frame = ttk.LabelFrame(dashboard_frame, text="Tình trạng & Niềm tin Hệ thống", padding=10); belief_frame.grid(row=0, column=0, sticky="ns", padx=(0,10))
-        ttk.Label(belief_frame, text="TRẠNG THÁI ƯỚC TÍNH:", font=('Arial', 10, 'bold')).pack(anchor="w")
-        ttk.Label(belief_frame, textvariable=self.gnss_belief_state_var, font=('Arial', 14, 'bold'), foreground="blue").pack(anchor="w", pady=(0, 10))
-        self.belief_bars = {}
-        for state, var in self.belief_vars.items():
-            ttk.Label(belief_frame, text=f"Niềm tin '{state}':").pack(anchor="w", pady=(5,0))
-            progress = ttk.Progressbar(belief_frame, variable=var, maximum=100, bootstyle="info")
-            progress.pack(fill="x", expand=True); self.belief_bars[state] = progress
-        motion_frame = ttk.LabelFrame(dashboard_frame, text="Phân tích Chuyển động", padding=10); motion_frame.grid(row=0, column=1, sticky="nsew", padx=(0,10))
-        motion_frame.grid_columnconfigure(1, weight=1)
-        def add_metric_label(parent, text, row):
-            ttk.Label(parent, text=text, font=('Arial', 10, 'bold')).grid(row=row, column=0, sticky="w", padx=5, pady=3)
-            var = tk.StringVar(value="---"); ttk.Label(parent, textvariable=var, font=('Arial', 10, 'normal')).grid(row=row, column=1, sticky="w", padx=5, pady=3); return var
-        self.gnss_motion_model_var = add_metric_label(motion_frame, "Mô hình Phù hợp nhất:", 0)
-        self.gnss_velocity_var = add_metric_label(motion_frame, "Vận tốc 3D Ước tính:", 1)
-        self.gnss_uncertainty_var = add_metric_label(motion_frame, "Độ Bất định Vị trí:", 2)
-        qrf_frame = ttk.LabelFrame(dashboard_frame, text="Đánh giá Tình báo (QRF)", padding=10); qrf_frame.grid(row=0, column=2, sticky="ns")
-        qrf_frame.grid_columnconfigure(0, weight=1); qrf_frame.grid_rowconfigure(1, weight=1)
-        self.qrf_trend_vel_var = add_metric_label(qrf_frame, "Vận tốc Xu hướng (Wavelet):", 0)
-        self.qrf_transients_var = add_metric_label(qrf_frame, "Số Sự kiện Tức thời:", 1)
-        ttk.Label(qrf_frame, text="Đánh giá của Hệ thống:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky="nw", padx=5, pady=(10,0), columnspan=2)
-        self.qrf_assessment_text = tk.Text(qrf_frame, height=3, width=35, wrap="word", relief="solid", borderwidth=1, font=('Arial', 9))
-        self.qrf_assessment_text.grid(row=3, column=0, sticky="nsew", padx=5, pady=5, columnspan=2)
-        self.qrf_assessment_text.insert("1.0", "Chờ báo cáo chiến lược..."); self.qrf_assessment_text.config(state="disabled")
-        sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=1, column=0, sticky="nsew", pady=(10,0))
-        gnss_headers = ["Thời gian", "Trạng thái\nƯớc tính", "Vận tốc 3D\n(mm/s)", "Độ Bất định\n(mm)", "Mô hình\nChuyển động", "Đánh giá Hệ thống"]
-        self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True); self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
-        self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
-        for i, w in enumerate([80, 120, 100, 100, 120, 250]): self.sheet_gnss.column_width(column=i, width=w)
-        ttk.Button(parent_tab, text="Lưu Bảng Phân tích GNSS (CSV)", command=self.save_gnss_to_csv, bootstyle="info-outline").grid(row=2, column=0, sticky='e', pady=5)
+        def create_gnss_tab(self, parent_tab):
+                parent_tab.grid_rowconfigure(1, weight=1)
+                parent_tab.grid_columnconfigure(0, weight=1)
+        
+                dashboard_frame = ttk.Frame(parent_tab)
+                dashboard_frame.grid(row=0, column=0, sticky="ew", pady=5)
+                dashboard_frame.grid_columnconfigure(1, weight=1)
+
+            # ### <<< KHÔI PHỤC LA BÀN >>> ###
+            # Cột 0: La bàn và Phân tích chuyển động
+                motion_compass_frame = ttk.Frame(dashboard_frame)
+                motion_compass_frame.grid(row=0, column=0, sticky="ns", padx=(0,10))
+            
+                self.compass_canvas = tk.Canvas(motion_compass_frame, width=150, height=150, bg='white', highlightthickness=0)
+                self.compass_canvas.pack(pady=5)
+                self.draw_compass_base() # Gọi hàm vẽ la bàn
+            
+                motion_frame = ttk.LabelFrame(motion_compass_frame, text="Phân tích Chuyển động", padding=10)
+                motion_frame.pack(fill="x", expand=True, pady=(10,0))
+                motion_frame.grid_columnconfigure(1, weight=1)
+
+                def add_metric_label(parent, text, row):
+                    ttk.Label(parent, text=text, font=('Arial', 10, 'bold')).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+                    var = tk.StringVar(value="---")
+                    ttk.Label(parent, textvariable=var, font=('Arial', 10, 'normal')).grid(row=row, column=1, sticky="w", padx=5, pady=3)
+                    return var
+            
+                self.gnss_velocity_var = add_metric_label(motion_frame, "Vận tốc 3D Ước tính:", 0)
+                self.gnss_uncertainty_var = add_metric_label(motion_frame, "Độ Bất định Vị trí:", 1)
+                self.direction_var = add_metric_label(motion_frame, "Hướng dịch chuyển:", 2) # Thêm lại biến hướng
+            
+            # Cột 1: Niềm tin hệ thống
+                belief_frame = ttk.LabelFrame(dashboard_frame, text="Tình trạng & Niềm tin Hệ thống", padding=10)
+                belief_frame.grid(row=0, column=1, sticky="ns", padx=(0,10))
+            
+                ttk.Label(belief_frame, text="TRẠNG THÁI ƯỚC TÍNH:", font=('Arial', 10, 'bold')).pack(anchor="w")
+                ttk.Label(belief_frame, textvariable=self.gnss_belief_state_var, font=('Arial', 14, 'bold'), foreground="blue").pack(anchor="w", pady=(0, 10))
+            
+                self.belief_bars = {}
+                for state, var in self.belief_vars.items():
+                    ttk.Label(belief_frame, text=f"Niềm tin '{state}':").pack(anchor="w", pady=(5,0))
+                    progress = ttk.Progressbar(belief_frame, variable=var, maximum=100, bootstyle="info")
+                    progress.pack(fill="x", expand=True)
+                    self.belief_bars[state] = progress
+            
+            # Thêm hiển thị mô hình phù hợp nhất ở đây
+                ttk.Label(belief_frame, text="Mô hình Phù hợp nhất:", font=('Arial', 10, 'bold')).pack(anchor="w", pady=(10,0))
+                ttk.Label(belief_frame, textvariable=self.gnss_motion_model_var).pack(anchor="w")
+
+            # Cột 2: Đánh giá QRF
+                qrf_frame = ttk.LabelFrame(dashboard_frame, text="Đánh giá Tình báo (QRF)", padding=10)
+                qrf_frame.grid(row=0, column=2, sticky="ns")
+                qrf_frame.grid_columnconfigure(0, weight=1)
+            
+                self.qrf_trend_vel_var = add_metric_label(qrf_frame, "Vận tốc Xu hướng (Wavelet):", 0)
+                self.qrf_transients_var = add_metric_label(qrf_frame, "Số Sự kiện Tức thời:", 1)
+            
+                ttk.Label(qrf_frame, text="Đánh giá của Hệ thống:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky="nw", padx=5, pady=(10,0), columnspan=2)
+                self.qrf_assessment_text = tk.Text(qrf_frame, height=4, width=35, wrap="word", relief="solid", borderwidth=1, font=('Arial', 9))
+                self.qrf_assessment_text.grid(row=3, column=0, sticky="nsew", padx=5, pady=5, columnspan=2)
+                self.qrf_assessment_text.insert("1.0", "Chờ báo cáo chiến lược..."); self.qrf_assessment_text.config(state="disabled")
+
+            # --- Bảng ghi Log ---
+                sheet_frame = ttk.Frame(parent_tab)
+                sheet_frame.grid(row=1, column=0, sticky="nsew", pady=(10,0))
+                gnss_headers = ["Thời gian", "Trạng thái\nƯớc tính", "Vận tốc 3D\n(mm/s)", "Độ Bất định\n(mm)", "Mô hình\nChuyển động", "Đánh giá Hệ thống"]
+                self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True)
+                self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
+                self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
+                for i, w in enumerate([80, 120, 100, 100, 120, 250]): self.sheet_gnss.column_width(column=i, width=w)
+        
+                ttk.Button(parent_tab, text="Lưu Bảng Phân tích GNSS (CSV)", command=self.save_gnss_to_csv, bootstyle="info-outline").grid(row=2, column=0, sticky='e', pady=5)
+    
+    def draw_compass_base(self):
+        w, h = 150, 150
+        self.compass_canvas.create_oval(5, 5, w-5, h-5, outline='gray', width=1)
+        for i in range(0, 360, 30):
+            rad = math.radians(i)
+            self.compass_canvas.create_line(w/2 + 65*math.sin(rad), h/2 - 65*math.cos(rad), w/2 + 70*math.sin(rad), h/2 - 70*math.cos(rad), fill='gray')
+        self.compass_canvas.create_text(w/2, 15, text="N", font=('Arial', 10, 'bold'))
+        self.compass_canvas.create_text(w/2, h-15, text="S", font=('Arial', 10, 'bold'))
+        self.compass_canvas.create_text(15, h/2, text="W", font=('Arial', 10, 'bold'))
+        self.compass_canvas.create_text(w-15, h/2, text="E", font=('Arial', 10, 'bold'))
+        self.compass_needle = self.compass_canvas.create_line(w/2, h/2, w/2, 25, arrow=tk.LAST, width=3, fill='red')
+
+    def update_compass_needle(self, angle_deg):
+        w, h = 150, 150
+        angle_rad = math.radians(angle_deg)
+        end_x = w/2 + 60 * math.sin(angle_rad)
+        end_y = h/2 - 60 * math.cos(angle_rad)
+        self.compass_canvas.coords(self.compass_needle, w/2, h/2, end_x, end_y)
 
     def create_water_tab(self, parent_tab):
         parent_tab.grid_rowconfigure(0, weight=1); parent_tab.grid_columnconfigure(0, weight=1)
@@ -887,25 +944,59 @@ class AppGUI:
         if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.update_plot()
         self.root.after(250, self.periodic_update)
 
-    def update_gnss_dashboard_advanced(self, report):
-        belief = report.get("belief_state_vector", {}); most_likely_state = report.get("most_likely_state", "---")
-        self.gnss_belief_state_var.set(most_likely_state)
-        for state, var in self.belief_vars.items():
-            prob = belief.get(state, 0) * 100; var.set(prob)
-            if state == "RapidFailure" and prob > 50: self.belief_bars[state].config(bootstyle="danger")
-            elif state == "SlowCreep" and prob > 60: self.belief_bars[state].config(bootstyle="warning")
-            else: self.belief_bars[state].config(bootstyle="info")
-        stratcom = report.get("stratcom_analysis", {}); self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
-        qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
-        self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
-        self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
-        self.qrf_transients_var.set(str(qrf.get('transient_event_count', '---')))
-        self.qrf_assessment_text.config(state="normal"); self.qrf_assessment_text.delete("1.0", "end")
-        self.qrf_assessment_text.insert("1.0", stratcom.get("assessment", "Không có đánh giá.")); self.qrf_assessment_text.config(state="disabled")
-        ts = datetime.fromtimestamp(report.get('timestamp', time.time())).strftime("%H:%M:%S")
-        gnss_record = [ts, most_likely_state, f"{qrf.get('trend_velocity_mmps', 0):.4f}", self.gnss_uncertainty_var.get().replace(' mm',''), stratcom.get("most_likely_motion_model", "---"), stratcom.get("assessment", "")]
-        self.backend.gnss_analysis_data.append(gnss_record); self.sheet_gnss.insert_row(gnss_record)
-        self.highlight_gnss_row(self.sheet_gnss.get_total_rows() - 1, most_likely_state)
+        def update_gnss_dashboard_advanced(self, report):
+        # Cập nhật Bảng điều khiển Niềm tin
+                belief = report.get("belief_state_vector", {})
+                most_likely_state = report.get("most_likely_state", "---")
+                self.gnss_belief_state_var.set(most_likely_state)
+        
+                for state, var in self.belief_vars.items():
+                    prob = belief.get(state, 0) * 100
+                    var.set(prob)
+            # Đổi màu thanh tiến trình theo mức độ nguy hiểm của trạng thái
+                    if state == "RapidFailure" and prob > 50:
+                        self.belief_bars[state].config(bootstyle="danger")
+                    elif state == "SlowCreep" and prob > 60:
+                        self.belief_bars[state].config(bootstyle="warning")
+                    else:
+                        self.belief_bars[state].config(bootstyle="info")
+
+        # Cập nhật Phân tích Chuyển động
+                stratcom = report.get("stratcom_analysis", {})
+                self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
+        
+                qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
+                self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+        
+        # ### <<< KHÔI PHỤC CẬP NHẬT LA BÀN VÀ HƯỚNG >>> ###
+        # Lưu ý: Cần đảm bảo shifting.py gửi 'direction_degrees' trong báo cáo chiến lược
+                direction = qrf.get("direction_degrees", 0) 
+                self.direction_var.set(f"{direction:.2f}°")
+                self.update_compass_needle(direction)
+        # ### <<< KẾT THÚC KHÔI PHỤC >>> ###
+
+        # Cập nhật Đánh giá QRF
+                self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+                self.qrf_transients_var.set(str(qrf.get('transient_event_count', '---')))
+        
+                self.qrf_assessment_text.config(state="normal")
+                self.qrf_assessment_text.delete("1.0", "end")
+                self.qrf_assessment_text.insert("1.0", stratcom.get("assessment", "Không có đánh giá."))
+                self.qrf_assessment_text.config(state="disabled")
+
+        # Cập nhật Bảng ghi
+                ts = datetime.fromtimestamp(report.get('timestamp', time.time())).strftime("%H:%M:%S")
+                gnss_record = [
+                    ts,
+                    most_likely_state,
+                    f"{qrf.get('trend_velocity_mmps', 0):.4f}",
+                    self.gnss_uncertainty_var.get().replace(' mm',''), # Lấy từ simple update
+                    stratcom.get("most_likely_motion_model", "---"),
+                    stratcom.get("assessment", "")
+                ]
+                self.backend.gnss_analysis_data.append(gnss_record)
+                self.sheet_gnss.insert_row(gnss_record)
+                self.highlight_gnss_row(self.sheet_gnss.get_total_rows() - 1, most_likely_state)
         
     def update_gnss_dashboard_simple(self, report):
         vel = report.get("estimated_velocity_mmps", 0); uncertainty = report.get("position_uncertainty_mm", 0)
