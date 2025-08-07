@@ -415,15 +415,34 @@ class Backend:
             time.sleep(15)
 
     def start_shifting_process(self):
-        if self.shifting_process and self.shifting_process.poll() is None: logger.info("Tiến trình shifting.py đã đang chạy."); return
-        if not self.gnss_topics: logger.warning("Không có topic GNSS nào để khởi động shifting.py."); return
+        if self.shifting_process and self.shifting_process.poll() is None:
+            logger.info("Tiến trình shifting.py đã đang chạy."); return
+        if not self.gnss_topics:
+            logger.warning("Không có topic GNSS nào để khởi động shifting.py."); return
         try:
             classification_table_json = json.dumps(self.gnss_speed_classification)
-            command = [sys.executable, '-u', 'shifting.py', '--broker', self.broker, '--port', str(self.port), '--classification-table', classification_table_json]
+            
+            # ### <<< SỬA LỖI TRUYỀN ĐỐI SỐ >>> ###
+            command = [
+                sys.executable, '-u', 'shifting.py',
+                '--broker', self.broker,
+                '--port', str(self.port)
+            ]
+            
+            # Thêm các đối số tùy chọn
             if self.username: command.extend(['--username', self.username])
             if self.password: command.extend(['--password', self.password])
-            for topic in self.gnss_topics: command.extend(['--topic', topic])
+            
+            # Thêm các topic
+            for topic in self.gnss_topics:
+                command.extend(['--topic', topic])
+                
+            # Thêm bảng phân loại MỘT CÁCH AN TOÀN
+            command.extend(['--classification-table', classification_table_json])
+            # ### <<< KẾT THÚC SỬA LỖI >>> ###
+
             logger.info(f"Đang khởi chạy shifting.py...")
+            # Popen sẽ tự động xử lý việc đặt các đối số trong dấu ngoặc kép nếu cần
             self.shifting_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
             threading.Thread(target=self._read_shifting_output, args=(self.shifting_process.stdout,), daemon=True).start()
             threading.Thread(target=self._log_process_errors, args=(self.shifting_process.stderr, "SHIFTING"), daemon=True).start()
