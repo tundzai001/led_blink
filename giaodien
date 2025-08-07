@@ -796,9 +796,9 @@ class AppGUI:
         qrf_frame.grid_columnconfigure(0, weight=1); qrf_frame.grid_rowconfigure(1, weight=1)
         self.qrf_trend_vel_var = add_metric_label(qrf_frame, "Vận tốc Xu hướng (Wavelet):", 0)
         self.qrf_transients_var = add_metric_label(qrf_frame, "Số Sự kiện Tức thời:", 1)
-        ttk.Label(qrf_frame, text="Đánh giá của Hệ thống:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky="nw", padx=5, pady=(10,0))
+        ttk.Label(qrf_frame, text="Đánh giá của Hệ thống:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky="nw", padx=5, pady=(10,0), columnspan=2)
         self.qrf_assessment_text = tk.Text(qrf_frame, height=3, width=35, wrap="word", relief="solid", borderwidth=1, font=('Arial', 9))
-        self.qrf_assessment_text.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+        self.qrf_assessment_text.grid(row=3, column=0, sticky="nsew", padx=5, pady=5, columnspan=2)
         self.qrf_assessment_text.insert("1.0", "Chờ báo cáo chiến lược..."); self.qrf_assessment_text.config(state="disabled")
         sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=1, column=0, sticky="nsew", pady=(10,0))
         gnss_headers = ["Thời gian", "Trạng thái\nƯớc tính", "Vận tốc 3D\n(mm/s)", "Độ Bất định\n(mm)", "Mô hình\nChuyển động", "Đánh giá Hệ thống"]
