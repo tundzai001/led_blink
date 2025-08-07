@@ -26,7 +26,7 @@ import subprocess
 import math
 import traceback
 
-# --- THIẾT LẬP MÔI TRƯỜNG VÀ CẢNH BÁO ---
+# --- THIẾT LẬP MÔI TRƯỜỜNG VÀ CẢNH BÁO ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message="Unable to import Axes3D")
@@ -74,118 +74,213 @@ class Constants:
     MAX_PLOT_POINTS = 10000
     MAX_SENSOR_RECORDS = 10000
     CHART_POINTS_PER_VIEW = 40
+    WARNING_REPEAT_SECONDS = 60
+    DECREASING_REPEAT_SECONDS = 100
     SAFE_READINGS_REQUIRED_INITIAL = 10
-    SAFE_READINGS_REQUIRED_RETURN = 15
+    SAFE_READINGS_REQUIRED_RETURN_1 = 10
+    SAFE_READINGS_REQUIRED_RETURN_2 = 15
 
 # ==============================================================================
-# QUẢN LÝ CẢNH BÁO HỢP NHẤT
+# CÁC HÀM TIỆN ÍCH
 # ==============================================================================
+def haversine_3d(p1, p2):
+    R = 6371000
+    lat1, lon1, h1 = p1.get("lat"), p1.get("lon"), p1.get("h")
+    lat2, lon2, h2 = p2.get("lat"), p2.get("lon"), p2.get("h")
+    if any(v is None for v in [lat1, lon1, h1, lat2, lon2, h2]): return float('inf')
+    lat1_rad, lon1_rad, lat2_rad, lon2_rad = map(math.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2_rad - lat1_rad; dlon = lon2_rad - lon1_rad
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+    dist_2d = R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    return math.sqrt(dist_2d**2 + (h2 - h1)**2)
+
+# ==============================================================================
+# QUẢN LÝ CẢNH BÁO ĐA KÊNH VỚI MÁY TRẠNG THÁI CON
+# ==============================================================================
+class WaterStateMachine:
+    def __init__(self, alert_manager):
+        self.alert_manager = alert_manager; self.backend = alert_manager.backend
+        self.current_level = 0; self.safe_readings_count = 0; self.warning_readings_count = 0
+        self.decreasing_warning_count = 0; self.was_in_high_level_state = False
+        self.initial_safe_played = False; self.safe_return_phase = 0
+
+    def process_new_value(self, value):
+        previous_level = self.current_level
+        new_level = self._calculate_alert_level(value)
+        if new_level != previous_level: logger.info(f"[Water SM] Chuyển trạng thái {previous_level} -> {new_level}")
+        action_request = None
+        if new_level == 0: action_request = self._handle_safe_state()
+        elif new_level == 1: action_request = self._handle_warning_state(previous_level)
+        elif new_level == 2: action_request = self._handle_critical_state()
+        self.current_level = new_level
+        if action_request: self.alert_manager.request_action(action_request)
+        return new_level
+
+    def _calculate_alert_level(self, value):
+        if self.backend.critical_threshold is not None and value >= self.backend.critical_threshold: return 2
+        elif self.backend.warning_threshold is not None and value >= self.backend.warning_threshold: return 1
+        return 0
+
+    def _handle_safe_state(self):
+        self.warning_readings_count, self.decreasing_warning_count = 0, 0
+        self.safe_readings_count += 1
+        if not self.was_in_high_level_state:
+            if not self.initial_safe_played and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_INITIAL:
+                logger.info("[Water SM] Đạt 10 lần đo an toàn ban đầu."); return "SAFE_INITIAL"
+        else:
+            if self.safe_return_phase == 0: self.safe_return_phase = 1
+            if self.safe_return_phase == 1 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_1:
+                logger.info("[Water SM] Trở về an toàn, đạt 10 lần đo."); self.safe_return_phase = 2; return "SAFE_RETURN_1"
+            elif self.safe_return_phase == 2 and self.safe_readings_count == Constants.SAFE_READINGS_REQUIRED_RETURN_2:
+                logger.info("[Water SM] Trở về an toàn, đạt 15 lần đo.")
+                self.was_in_high_level_state, self.initial_safe_played, self.safe_return_phase = False, True, 0
+                return "SAFE_RETURN_2"
+        return None
+
+    def _handle_warning_state(self, previous_level):
+        self.safe_readings_count, self.safe_return_phase = 0, 0
+        self.was_in_high_level_state = True
+        if previous_level == 0:
+            logger.info("[Water SM] Mực nước TĂNG lên mức Cảnh báo.")
+            self.warning_readings_count, self.decreasing_warning_count = 1, 0
+            return "WATER_WARN_RISING"
+        elif previous_level == 2:
+            logger.info("[Water SM] Mực nước GIẢM xuống mức Cảnh báo.")
+            self.decreasing_warning_count, self.warning_readings_count = 1, 0
+            return "WATER_WARN_DECREASING"
+        elif previous_level == 1:
+            if self.warning_readings_count > 0:
+                self.warning_readings_count += 1
+                if self.warning_readings_count % Constants.WARNING_REPEAT_INTERVAL == 0:
+                    logger.info(f"[Water SM] Lặp lại cảnh báo TĂNG lần thứ {self.warning_readings_count}."); return "WATER_WARN_RISING"
+            elif self.decreasing_warning_count > 0:
+                self.decreasing_warning_count += 1
+                if self.decreasing_warning_count % Constants.DECREASING_REPEAT_INTERVAL == 0:
+                    logger.info(f"[Water SM] Lặp lại cảnh báo GIẢM lần thứ {self.decreasing_warning_count}."); return "WATER_WARN_DECREASING"
+        return None
+
+    def _handle_critical_state(self):
+        self.safe_readings_count, self.warning_readings_count, self.decreasing_warning_count, self.safe_return_phase = 0, 0, 0, 0
+        self.was_in_high_level_state = True; logger.critical("[Water SM] Mực nước ở mức NGUY HIỂM."); return "WATER_CRITICAL"
+
+class GnssStateMachine:
+    def __init__(self, alert_manager):
+        self.alert_manager = alert_manager; self.backend = alert_manager.backend
+        self.current_level = 0; self.moderate_readings_count = 0
+        self.safe_readings_count = 0; self.was_in_high_level_state = False
+
+    def process_new_report(self, report):
+        classification_name = report.get('classification_name', 'N/A').lower()
+        previous_level = self.current_level; new_level = 0
+        if "rapid" in classification_name: new_level = 3 if "extremely" in classification_name or "very" in classification_name else 2
+        elif "moderate" in classification_name: new_level = 1
+        if new_level != previous_level: logger.info(f"[GNSS SM] Chuyển trạng thái {previous_level} -> {new_level} (Phân loại: {report.get('classification_name', 'N/A')})")
+        action_request = None
+        if new_level == 0: action_request = self._handle_safe_state()
+        elif new_level == 1: action_request = self._handle_moderate_state(previous_level)
+        elif new_level >= 2: action_request = self._handle_rapid_state()
+        self.current_level = new_level
+        if action_request: self.alert_manager.request_action(action_request)
+
+    def _handle_safe_state(self):
+        self.moderate_readings_count = 0
+        if self.was_in_high_level_state:
+            self.safe_readings_count += 1
+            if self.safe_readings_count >= 10:
+                logger.info("[GNSS SM] Trở về an toàn, đạt 10 lần đo.")
+                self.was_in_high_level_state = False; self.safe_readings_count = 0; return "SAFE_RETURN_GNSS"
+        return None
+
+    def _handle_moderate_state(self, previous_level):
+        self.safe_readings_count = 0; self.was_in_high_level_state = True
+        if previous_level == 0:
+            logger.info("[GNSS SM] Dịch chuyển TĂNG lên mức Vừa.")
+            self.moderate_readings_count = 1; return "GNSS_WARN"
+        elif previous_level == 1:
+             self.moderate_readings_count += 1
+             if self.moderate_readings_count % 4 == 0:
+                logger.info(f"[GNSS SM] Lặp lại cảnh báo Vừa lần thứ {self.moderate_readings_count}."); return "GNSS_WARN"
+        return None
+
+    def _handle_rapid_state(self):
+        self.safe_readings_count, self.moderate_readings_count = 0, 0
+        self.was_in_high_level_state = True; logger.critical("[GNSS SM] Dịch chuyển ở mức NHANH hoặc cao hơn."); return "GNSS_CRITICAL"
+
 class AlertManager:
     def __init__(self, backend_ref):
         self.backend = backend_ref
-        self.water_alert_level = 0
-        self.gnss_alert_level = 0
-        self.composite_alert_level = "SAFE"
-        self.safe_readings_count = 0
-        self.was_in_high_level_state = False
-        self.initial_safe_played = False
-        self.alert_thread = None
+        self.water_sm = WaterStateMachine(self); self.gnss_sm = GnssStateMachine(self)
+        self.active_alert_name = "SAFE"; self.alert_thread = None
+        self.ALERT_PRIORITY = {
+            "SAFE": 0, "SAFE_INITIAL": 1, "SAFE_RETURN_1": 2, "SAFE_RETURN_2": 2, "SAFE_RETURN_GNSS": 2,
+            "WATER_WARN_DECREASING": 3, "WATER_WARN_RISING": 4, 
+            "GNSS_WARN": 5, "FUSED_HIGH": 6,
+            "WATER_CRITICAL": 7, "GNSS_CRITICAL": 8, "FUSED_CRITICAL": 9, "FUSED_MAXIMUM": 10 }
 
-    def _play_sequence_in_thread(self, sound_list, loop=False, activate_relay=False):
-        self.stop_all_alerts()
-        if self.alert_thread and self.alert_thread.is_alive(): return
+    def process_new_gnss_report(self, report): self.gnss_sm.process_new_report(report); self._update_composite_alert()
+    def process_new_water_value(self, value):
+        if self.backend.critical_threshold is None or self.backend.warning_threshold is None: return -1
+        new_level = self.water_sm.process_new_value(value); self._update_composite_alert(); return new_level
+
+    def request_action(self, action_name): logger.info(f"[AlertManager] Nhận yêu cầu hành động: {action_name}"); self.trigger_alert_by_name(action_name)
+
+    def _update_composite_alert(self):
+        w = self.water_sm.current_level; g = self.gnss_sm.current_level; new_composite = "SAFE"
+        if w >= 2 and g >= 2: new_composite = "FUSED_MAXIMUM"
+        elif (w >= 2 and g == 1) or (w == 1 and g >= 2): new_composite = "FUSED_CRITICAL"
+        elif w == 1 and g == 1: new_composite = "FUSED_HIGH"
+        if new_composite != "SAFE": self.trigger_alert_by_name(new_composite)
+        elif w == 0 and g == 0:
+            if self.ALERT_PRIORITY.get(self.active_alert_name, 0) > self.ALERT_PRIORITY["SAFE_RETURN_2"]: self.trigger_alert_by_name("SAFE")
+
+    def trigger_alert_by_name(self, alert_name):
+        sound_map = {
+            "SAFE_INITIAL": ([self.backend.safe_sound_1], False, False),
+            "SAFE_RETURN_1": ([self.backend.safe_sound_2], False, False),
+            "SAFE_RETURN_2": ([self.backend.safe_sound_2], False, False),
+            "SAFE_RETURN_GNSS": ([self.backend.safe_sound_2], False, False),
+            "WATER_WARN_RISING": ([self.backend.siren_sound, self.backend.warning_sound], False, True),
+            "WATER_WARN_DECREASING": ([self.backend.decreasing_sound], False, True),
+            "WATER_CRITICAL": ([self.backend.siren_sound, self.backend.danger_sound, self.backend.siren_sound], False, True),
+            "GNSS_WARN": ([self.backend.siren_sound, self.backend.gnss_moderate_sound], False, True),
+            "GNSS_CRITICAL": ([self.backend.siren_sound, self.backend.gnss_rapid_sound], False, True),
+            "FUSED_HIGH": ([self.backend.siren_sound, self.backend.fused_high_sound], True, True),
+            "FUSED_CRITICAL": ([self.backend.siren_sound, self.backend.fused_critical_sound], True, True),
+            "FUSED_MAXIMUM": ([self.backend.siren_sound, self.backend.fused_maximum_sound], True, True),
+            "SAFE": ([], False, False), }
+        sounds, loop, relay = sound_map.get(alert_name, ([], False, False))
+        self._play_sequence_in_thread(alert_name, sounds, loop, relay)
+
+    def _play_sequence_in_thread(self, alert_name, sound_list, loop=False, activate_relay=False):
+        current_priority = self.ALERT_PRIORITY.get(self.active_alert_name, 0); new_priority = self.ALERT_PRIORITY.get(alert_name, 0)
+        if new_priority < current_priority and "SAFE" not in self.active_alert_name:
+            logger.info(f"Bỏ qua '{alert_name}' (ưu tiên {new_priority}) vì '{self.active_alert_name}' (ưu tiên {current_priority}) đang hoạt động.")
+            return
+        self.stop_all_alerts(); self.active_alert_name = alert_name
+        if alert_name == "SAFE": return
         def target():
             if not self.backend.mixer_initialized: return
             if activate_relay: self.backend.activate_siren_relay()
             try:
-                while not self.backend.exiting:
+                while not self.backend.exiting and self.active_alert_name == alert_name:
                     for sound in sound_list:
-                        if sound and not self.backend.exiting:
+                        if sound and not self.backend.exiting and self.active_alert_name == alert_name:
                             sound.play()
-                            while IS_PI and pygame.mixer.get_busy() and not self.backend.exiting: time.sleep(0.1)
+                            while IS_PI and pygame.mixer.get_busy() and not self.backend.exiting and self.active_alert_name == alert_name: time.sleep(0.1)
                     if not loop: break
-            except Exception as e:
-                logger.error(f"Lỗi trong luồng phát âm thanh: {e}")
-        self.alert_thread = threading.Thread(target=target, daemon=True)
-        self.alert_thread.start()
+            except Exception as e: logger.error(f"Lỗi trong luồng phát âm thanh: {e}")
+            finally:
+                if self.active_alert_name == alert_name:
+                    if not loop: self.active_alert_name = "SAFE"
+                    if not loop and activate_relay: self.backend.deactivate_siren_relay()
+                self.alert_thread = None
+        self.alert_thread = threading.Thread(target=target, daemon=True); self.alert_thread.start()
 
     def stop_all_alerts(self):
+        if self.active_alert_name != "SAFE": logger.info(f"Đang dừng cảnh báo: {self.active_alert_name}")
+        self.active_alert_name = "SAFE"
         if self.backend.mixer_initialized: pygame.mixer.stop()
         self.backend.deactivate_siren_relay()
-        self.alert_thread = None
-
-    def process_new_gnss_report(self, report):
-        classification_name = report.get('classification_name', 'N/A').lower()
-        if "rapid" in classification_name:
-            new_level = 3 if "extremely" in classification_name or "very" in classification_name else 2
-        elif "moderate" in classification_name: new_level = 1
-        else: new_level = 0
-            
-        if self.gnss_alert_level != new_level:
-            logger.info(f"Cảnh báo GNSS: Chuyển trạng thái {self.gnss_alert_level} -> {new_level} (Phân loại: {report.get('classification_name', 'N/A')})")
-            self.gnss_alert_level = new_level
-            self._update_composite_alert()
-
-    def process_new_water_value(self, value):
-        if self.backend.critical_threshold is None or self.backend.warning_threshold is None: return
-        new_level = self._calculate_water_alert_level(value)
-        if self.water_alert_level != new_level:
-            logger.info(f"Cảnh báo Nước: Chuyển trạng thái {self.water_alert_level} -> {new_level}")
-            self.water_alert_level = new_level
-            self._update_composite_alert()
-        self._handle_safe_state_logic()
-
-    def _calculate_water_alert_level(self, value):
-        if value >= self.backend.critical_threshold: return 2
-        elif value >= self.backend.warning_threshold: return 1
-        return 0
-
-    def _update_composite_alert(self):
-        w = self.water_alert_level; g = self.gnss_alert_level
-        previous_composite = self.composite_alert_level
-        new_composite = "SAFE"
-        
-        if w >= 2 and g >= 2: new_composite = "FUSED_MAXIMUM"
-        elif (w >= 2 and g == 1) or (w == 1 and g >= 2): new_composite = "FUSED_CRITICAL"
-        elif w == 1 and g == 1: new_composite = "FUSED_HIGH"
-        elif w >= 2: new_composite = "WATER_CRITICAL"
-        elif g >= 2: new_composite = "GNSS_CRITICAL"
-        elif w == 1: new_composite = "WATER_WARN"
-        elif g == 1: new_composite = "GNSS_WARN"
-
-        if new_composite != previous_composite:
-            logger.critical(f"HỆ THỐNG CẢNH BÁO HỢP NHẤT: {previous_composite} -> {new_composite} (WaterLv: {w}, GnssLv: {g})")
-            self.composite_alert_level = new_composite
-            self.trigger_alert_by_name(new_composite)
-            if new_composite != "SAFE": self.was_in_high_level_state = True
-            
-    def trigger_alert_by_name(self, alert_name):
-        sound_map = {
-            "SAFE": ([], False, False),
-            "WATER_WARN": ([self.backend.siren_sound, self.backend.water_warning_sound], True, True),
-            "WATER_CRITICAL": ([self.backend.siren_sound, self.backend.water_critical_sound], True, True),
-            "GNSS_WARN": ([self.backend.siren_sound, self.backend.gnss_warning_sound], True, True),
-            "GNSS_CRITICAL": ([self.backend.siren_sound, self.backend.gnss_critical_sound], True, True),
-            "FUSED_HIGH": ([self.backend.siren_sound, self.backend.fused_high_sound], True, True),
-            "FUSED_CRITICAL": ([self.backend.siren_sound, self.backend.fused_critical_sound], True, True),
-            "FUSED_MAXIMUM": ([self.backend.siren_sound, self.backend.fused_maximum_sound], True, True),
-        }
-        sounds, loop, relay = sound_map.get(alert_name, ([], False, False))
-        if not sounds and alert_name == "SAFE": self.stop_all_alerts()
-        else: self._play_sequence_in_thread(sounds, loop, relay)
-
-    def _handle_safe_state_logic(self):
-        is_truly_safe = (self.water_alert_level == 0 and self.gnss_alert_level == 0)
-        if is_truly_safe: self.safe_readings_count += 1
-        else: self.safe_readings_count = 0; return
-
-        if not self.was_in_high_level_state:
-            if not self.initial_safe_played and self.safe_readings_count >= Constants.SAFE_READINGS_REQUIRED_INITIAL:
-                self._play_sequence_in_thread([self.backend.safe_sound_1]); self.initial_safe_played = True
-        else:
-            if self.safe_readings_count >= Constants.SAFE_READINGS_REQUIRED_RETURN:
-                self._play_sequence_in_thread([self.backend.safe_sound_2])
-                self.was_in_high_level_state = False; self.initial_safe_played = True
 
 # ==============================================================================
 # LỚP LOGIC NỀN (BACKEND)
@@ -198,69 +293,60 @@ class Backend:
         self.publish_topic = ""; self.water_topics = []; self.gnss_topics = []; self.subscribe_topics = []
         self.warning_threshold = None; self.critical_threshold = None
         self.sounds_dir = Constants.DEFAULT_SOUNDS_DIR; self.test_sound_file_path = ""
-        self.mixer_initialized = False
-        self.siren_sound = None
-        self.water_warning_sound, self.water_critical_sound = None, None
-        self.gnss_warning_sound, self.gnss_critical_sound = None, None
+        self.mixer_initialized = False; self.siren_sound = None; self.warning_sound, self.danger_sound = None, None
+        self.decreasing_sound, self.safe_sound_1, self.safe_sound_2 = None, None, None
+        self.gnss_moderate_sound, self.gnss_rapid_sound = None, None
         self.fused_high_sound, self.fused_critical_sound, self.fused_maximum_sound = None, None, None
-        self.safe_sound_1, self.safe_sound_2 = None, None
-        self.overview_log_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
-        self.water_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
-        self.gnss_analysis_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
-        self.plot_data_points = deque(maxlen=Constants.MAX_PLOT_POINTS)
+        self.overview_log_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS); self.water_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS)
+        self.gnss_analysis_data = deque(maxlen=Constants.MAX_SENSOR_RECORDS); self.plot_data_points = deque(maxlen=Constants.MAX_PLOT_POINTS)
         self.gui_update_queue = queue.Queue()
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
-        self.shifting_process = None
-        self.alert_manager = AlertManager(self)
-        self.gnss_speed_classification = []
-        self.last_shifting_heartbeat = 0; self.is_shifting_responsive = True
-        self.load_config(); self.setup_audio_mixer(); self.setup_gpio()
-        atexit.register(self.cleanup_on_exit)
+        self.shifting_process = None; self.alert_manager = AlertManager(self)
+        self.gnss_speed_classification = []; self.last_shifting_heartbeat = 0; self.is_shifting_responsive = True
+        self.load_config(); self.setup_audio_mixer(); self.setup_gpio(); atexit.register(self.cleanup_on_exit)
+
+    def log_to_overview(self, source, message, status, timestamp=None):
+        ts = timestamp if timestamp else time.time(); dt_object = datetime.fromtimestamp(ts)
+        record = (dt_object.strftime("%H:%M:%S"), source, message, status)
+        self.overview_log_data.append(record); self.gui_update_queue.put(("overview_log", record))
 
     def on_message(self, client, userdata, msg):
         if not self.listening or self.exiting: return
-        if msg.topic in self.gnss_topics: return # Bỏ qua topic gnss ở đây
+        if msg.topic in self.gnss_topics: return
         try:
             data = json.loads(msg.payload.decode('utf-8'))
             if "value" in data:
                 value = float(data.get("value"))
-                self.alert_manager.process_new_water_value(value)
-                
+                current_water_level = self.alert_manager.process_new_water_value(value)
+                if current_water_level == -1: return
                 name = data.get("sensorname", msg.topic); ts = float(data.get("timestamp", time.time()))
-                dt_object = datetime.fromtimestamp(ts)
-                current_water_level = self.alert_manager.water_alert_level
                 status = "NGUY HIEM" if current_water_level == 2 else ("CANH BAO" if current_water_level == 1 else "AN TOAN")
-                water_record = (name, f"{value:.4f}", status, dt_object.strftime("%H:%M:%S %d-%m"))
-                overview_record = (dt_object.strftime("%H:%M:%S"), "Cảm biến Nước", f"{name}: {value:.4f}", status)
-                self.water_data.append(water_record); self.overview_log_data.append(overview_record); self.plot_data_points.append((dt_object, value))
-                self.gui_update_queue.put(("water_sensor", water_record)); self.gui_update_queue.put(("overview_log", overview_record))
-                if self.publish_topic: self.client.publish(self.publish_topic, f"{name},{value},{status},{ts}")
+                water_record = (name, f"{value:.4f}", status, datetime.fromtimestamp(ts).strftime("%H:%M:%S %d-%m"))
+                self.log_to_overview(f"Cảm biến Nước ({name})", f"Giá trị: {value:.4f}", status, ts)
+                self.water_data.append(water_record); self.plot_data_points.append((datetime.fromtimestamp(ts), value))
+                self.gui_update_queue.put(("water_sensor", water_record))
+                if self.publish_topic: self.client.publish(self.publish_topic, json.dumps({"sensor": name, "value": value, "status": status, "timestamp": ts}))
         except (json.JSONDecodeError, ValueError, KeyError) as e: logger.error(f"Lỗi xử lý message: {e} | Payload: {msg.payload.decode('utf-8', errors='ignore')}")
 
     def _read_shifting_output(self, pipe):
         for line in iter(pipe.readline, ''):
             try:
                 line_str = line.strip()
-                if not line_str: continue
+                if not line_str or not line_str.startswith('{'): continue
                 data = json.loads(line_str)
-                if data.get("type") == "ultimate_analysis_report":
-                    self.alert_manager.process_new_gnss_report(data)
+                if data.get("type") == "ultimate_analysis_report": self.alert_manager.process_new_gnss_report(data)
                 self.gui_update_queue.put(("gnss_report", data))
             except json.JSONDecodeError: logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
             except Exception as e: logger.error(f"Lỗi trong luồng đọc shifting.py: {e}"); break
         pipe.close(); logger.info("Luồng đọc kết quả từ shifting.py đã dừng.")
 
-    def clear_all_data(self):
-        self.overview_log_data.clear(); self.water_data.clear(); self.gnss_analysis_data.clear()
-        self.plot_data_points.clear(); self.gui_update_queue.put(("clear_all", None)); logger.info("Đã xóa dữ liệu nền.")
-
+    def clear_all_data(self): self.overview_log_data.clear(); self.water_data.clear(); self.gnss_analysis_data.clear(); self.plot_data_points.clear(); self.gui_update_queue.put(("clear_all", None)); logger.info("Đã xóa dữ liệu nền.")
     def save_session_data(self, silent=False):
         if not silent: logger.info("Đang lưu trạng thái hiện tại vào file...")
         try:
             plot_data_serializable = [(dt.isoformat(), val) for dt, val in self.plot_data_points]
-            session = {"overview_log_data": list(self.overview_log_data), "water_data": list(self.water_data),
-                       "gnss_analysis_data": list(self.gnss_analysis_data), "plot_data_points": plot_data_serializable}
+            session = {"overview_log_data": list(self.overview_log_data), "water_data": list(self.water_data), "gnss_analysis_data": list(self.gnss_analysis_data), "plot_data_points": plot_data_serializable}
             with open(Constants.SESSION_FILE, "w", encoding='utf-8') as f: json.dump(session, f)
             if not silent: logger.info(f"Đã lưu trạng thái vào {Constants.SESSION_FILE}")
         except Exception as e: logger.error(f"Lỗi khi lưu trạng thái: {e}")
@@ -369,11 +455,16 @@ class Backend:
             pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=4096)
             self.mixer_initialized = True
             self.siren_sound = self._load_sound("coi1.mp3")
-            self.water_warning_sound = self._load_sound("water_warning.mp3"); self.water_critical_sound = self._load_sound("water_critical.mp3")
-            self.gnss_warning_sound = self._load_sound("gnss_warning.mp3"); self.gnss_critical_sound = self._load_sound("gnss_critical.mp3")
-            self.fused_high_sound = self._load_sound("fused_high.mp3"); self.fused_critical_sound = self._load_sound("fused_critical.mp3")
+            self.warning_sound = self._load_sound("warning.mp3")
+            self.danger_sound = self._load_sound("danger.mp3")
+            self.decreasing_sound = self._load_sound("decrease.mp3")
+            self.safe_sound_1 = self._load_sound("safe.mp3")
+            self.safe_sound_2 = self._load_sound("safe2.mp3")
+            self.gnss_moderate_sound = self._load_sound("gnss_warning.mp3")
+            self.gnss_rapid_sound = self._load_sound("gnss_critical.mp3")
+            self.fused_high_sound = self._load_sound("fused_high.mp3")
+            self.fused_critical_sound = self._load_sound("fused_critical.mp3")
             self.fused_maximum_sound = self._load_sound("fused_maximum.mp3")
-            self.safe_sound_1 = self._load_sound("safe.mp3"); self.safe_sound_2 = self._load_sound("safe2.mp3")
             logger.info("Audio mixer đã sẵn sàng.")
         except Exception as e: logger.error(f"Không thể khởi tạo pygame mixer: {e}"); self.mixer_initialized = False
 
@@ -407,7 +498,7 @@ class Backend:
                 self.test_sound_file_path = settings_cfg.get("test_sound_path", "")
             if "GNSS_Classification" in self.config and self.config['GNSS_Classification']: self._load_gnss_from_config(self.config["GNSS_Classification"])
             else: self._reset_gnss_to_default()
-            self.setup_audio_mixer() 
+            if self.mixer_initialized: self.setup_audio_mixer() 
         except Exception as e:
             logger.error(f"Lỗi tải cấu hình: {e}. Sử dụng các giá trị trống."); self._reset_gnss_to_default()
 
@@ -822,16 +913,16 @@ class AppGUI:
     def update_overview_tab(self, record):
         self.sheet_overview.insert_row(record); last_row_index = self.sheet_overview.get_total_rows() - 1
         if last_row_index >= 0:
-            self.sheet_overview.see(row=last_row_index); status = record[3]
-            if status == "NGUY HIEM" or "rapid" in status.lower(): self.sheet_overview.highlight_rows([last_row_index], bg="#F8D7DA")
-            elif status == "CANH BAO" or "moderate" in status.lower(): self.sheet_overview.highlight_rows([last_row_index], bg="#FFF3CD")
-            else: self.sheet_overview.highlight_rows([last_row_index], bg="#D4EDDA")
+            self.sheet_overview.see(row=last_row_index); status = record[3].upper()
+            if "MAXIMUM" in status or "CRITICAL" in status or "NGUY HIEM" in status or "RAPID" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#F8D7DA")
+            elif "HIGH" in status or "WARN" in status or "CANH BAO" in status or "MODERATE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#FFF3CD")
+            elif "SAFE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#D4EDDA")
+            else: self.sheet_overview.highlight_rows([last_row_index], bg="#E9ECEF")
 
     def update_overview_with_gnss_report(self, item_data):
-        ts = datetime.fromtimestamp(item_data.get('timestamp', time.time())).strftime("%H:%M:%S"); classification = item_data.get('classification_name', 'N/A')
+        ts = item_data.get('timestamp', time.time()); classification = item_data.get('classification_name', 'N/A')
         vel = item_data.get('classification_velocity_mm_s', 0); message = f"Vận tốc 3D: {vel:.4f} mm/s"
-        record = (ts, "Phân tích GNSS", message, classification)
-        self.backend.overview_log_data.append(record); self.update_overview_tab(record)
+        self.backend.log_to_overview("Phân tích GNSS", message, classification, ts)
 
     def save_overview_to_csv(self): self._save_data_to_csv(list(self.backend.overview_log_data), ["Thời gian", "Nguồn", "Thông điệp", "Trạng thái"])
     def save_gnss_to_csv(self): self._save_data_to_csv(list(self.backend.gnss_analysis_data), ["Thời gian", "Tốc độ ngang (mm/s)", "Tốc độ đứng (mm/s)", "Hướng (°)", "Gia tốc ngang (mm/s²)", "Tổng dịch chuyển (m)", "Phân loại"])
@@ -918,10 +1009,11 @@ class AppGUI:
             text_to_show, color_to_show = self.backend.temp_status_text, "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
         else:
             am = self.backend.alert_manager
-            composite_status, w_lv, g_lv = am.composite_alert_level, am.water_alert_level, am.gnss_alert_level
-            text_to_show = f"Trạng thái: {composite_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
-            if "FUSED" in composite_status or "CRITICAL" in composite_status: color_to_show = "red"
-            elif "WARN" in composite_status: color_to_show = "orange"
+            active_status, w_lv, g_lv = am.active_alert_name, am.water_sm.current_level, am.gnss_sm.current_level
+            text_to_show = f"Trạng thái: {active_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
+            active_priority = am.ALERT_PRIORITY.get(active_status, 0)
+            if active_priority >= 7: color_to_show = "red"
+            elif active_priority >= 3: color_to_show = "orange"
             else: color_to_show = "green" if self.backend.listening else "darkgray"
         if self.status_label.cget("text") != text_to_show: self.status_label.config(text=text_to_show, foreground=color_to_show)
 
@@ -1092,8 +1184,7 @@ class MainController:
         logger.info("Đang khởi động giao diện người dùng..."); toplevel_window = Toplevel(self.root); self.app_instance = AppGUI(toplevel_window, self.backend, self.on_gui_close)
     def on_gui_close(self, shutdown=False): 
         self.app_instance = None;
-        if shutdown: 
-            self.command_queue.put('exit')
+        if shutdown: self.command_queue.put('exit')
     def handle_shutdown(self):
         logger.info("Nhận lệnh thoát...");
         if self.app_instance: self.app_instance.destroy_all_windows()
