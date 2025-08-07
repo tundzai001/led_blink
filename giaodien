@@ -166,45 +166,38 @@ class WaterStateMachine:
 class GnssStateMachine:
     def __init__(self, alert_manager):
         self.alert_manager = alert_manager; self.backend = alert_manager.backend
-        self.current_level = 0; self.moderate_readings_count = 0
-        self.safe_readings_count = 0; self.was_in_high_level_state = False
+        self.current_level = 0; self.safe_readings_count = 0; self.was_in_high_level_state = False
 
     def process_new_report(self, report):
-        classification_name = report.get('classification_name', 'N/A').lower()
-        previous_level = self.current_level; new_level = 0
-        if "rapid" in classification_name: new_level = 3 if "extremely" in classification_name or "very" in classification_name else 2
-        elif "moderate" in classification_name: new_level = 1
-        if new_level != previous_level: logger.info(f"[GNSS SM] Chuyển trạng thái {previous_level} -> {new_level} (Phân loại: {report.get('classification_name', 'N/A')})")
+        report_type = report.get("type")
+        previous_level = self.current_level
+        new_level = 0
+        
+        if report_type == "strategic_intelligence_report":
+            belief = report.get("belief_state_vector", {})
+            if belief.get("RapidFailure", 0) > 0.5: new_level = 3
+            elif belief.get("SlowCreep", 0) > 0.6: new_level = 2
+            elif belief.get("Stable", 1.0) < 0.5: new_level = 1
+        
+        if new_level != previous_level:
+            logger.info(f"[GNSS SM] Chuyển trạng thái {previous_level} -> {new_level} (Báo cáo: {report_type})")
+
         action_request = None
         if new_level == 0: action_request = self._handle_safe_state()
-        elif new_level == 1: action_request = self._handle_moderate_state(previous_level)
-        elif new_level >= 2: action_request = self._handle_rapid_state()
+        elif new_level == 1: action_request = "GNSS_WARN"
+        elif new_level >= 2: action_request = "GNSS_CRITICAL"
+            
         self.current_level = new_level
         if action_request: self.alert_manager.request_action(action_request)
-
+    
     def _handle_safe_state(self):
-        self.moderate_readings_count = 0
         if self.was_in_high_level_state:
             self.safe_readings_count += 1
             if self.safe_readings_count >= 10:
                 logger.info("[GNSS SM] Trở về an toàn, đạt 10 lần đo.")
-                self.was_in_high_level_state = False; self.safe_readings_count = 0; return "SAFE_RETURN_GNSS"
+                self.was_in_high_level_state = False; self.safe_readings_count = 0
+                return "SAFE_RETURN_GNSS"
         return None
-
-    def _handle_moderate_state(self, previous_level):
-        self.safe_readings_count = 0; self.was_in_high_level_state = True
-        if previous_level == 0:
-            logger.info("[GNSS SM] Dịch chuyển TĂNG lên mức Vừa.")
-            self.moderate_readings_count = 1; return "GNSS_WARN"
-        elif previous_level == 1:
-             self.moderate_readings_count += 1
-             if self.moderate_readings_count % 4 == 0:
-                logger.info(f"[GNSS SM] Lặp lại cảnh báo Vừa lần thứ {self.moderate_readings_count}."); return "GNSS_WARN"
-        return None
-
-    def _handle_rapid_state(self):
-        self.safe_readings_count, self.moderate_readings_count = 0, 0
-        self.was_in_high_level_state = True; logger.critical("[GNSS SM] Dịch chuyển ở mức NHANH hoặc cao hơn."); return "GNSS_CRITICAL"
 
 class AlertManager:
     def __init__(self, backend_ref):
@@ -219,7 +212,6 @@ class AlertManager:
 
     def process_new_gnss_report(self, report): self.gnss_sm.process_new_report(report); self._update_composite_alert()
     def process_new_water_value(self, value):
-        if self.backend.critical_threshold is None or self.backend.warning_threshold is None: return -1
         new_level = self.water_sm.process_new_value(value); self._update_composite_alert(); return new_level
 
     def request_action(self, action_name): logger.info(f"[AlertManager] Nhận yêu cầu hành động: {action_name}"); self.trigger_alert_by_name(action_name)
@@ -335,7 +327,8 @@ class Backend:
                 line_str = line.strip()
                 if not line_str or not line_str.startswith('{'): continue
                 data = json.loads(line_str)
-                if data.get("type") == "ultimate_analysis_report": self.alert_manager.process_new_gnss_report(data)
+                report_type = data.get("type")
+                if report_type == "strategic_intelligence_report": self.alert_manager.process_new_gnss_report(data)
                 self.gui_update_queue.put(("gnss_report", data))
             except json.JSONDecodeError: logger.warning(f"Nhận được dòng không phải JSON từ shifting.py: {line_str}")
             except Exception as e: logger.error(f"Lỗi trong luồng đọc shifting.py: {e}"); break
@@ -415,34 +408,16 @@ class Backend:
             time.sleep(15)
 
     def start_shifting_process(self):
-        if self.shifting_process and self.shifting_process.poll() is None:
-            logger.info("Tiến trình shifting.py đã đang chạy."); return
-        if not self.gnss_topics:
-            logger.warning("Không có topic GNSS nào để khởi động shifting.py."); return
+        if self.shifting_process and self.shifting_process.poll() is None: logger.info("Tiến trình shifting.py đã đang chạy."); return
+        if not self.gnss_topics: logger.warning("Không có topic GNSS nào để khởi động shifting.py."); return
         try:
             classification_table_json = json.dumps(self.gnss_speed_classification)
-            
-            # ### <<< SỬA LỖI TRUYỀN ĐỐI SỐ >>> ###
-            command = [
-                sys.executable, '-u', 'shifting.py',
-                '--broker', self.broker,
-                '--port', str(self.port)
-            ]
-            
-            # Thêm các đối số tùy chọn
+            command = [sys.executable, '-u', 'shifting.py', '--broker', self.broker, '--port', str(self.port)]
             if self.username: command.extend(['--username', self.username])
             if self.password: command.extend(['--password', self.password])
-            
-            # Thêm các topic
-            for topic in self.gnss_topics:
-                command.extend(['--topic', topic])
-                
-            # Thêm bảng phân loại MỘT CÁCH AN TOÀN
+            for topic in self.gnss_topics: command.extend(['--topic', topic])
             command.extend(['--classification-table', classification_table_json])
-            # ### <<< KẾT THÚC SỬA LỖI >>> ###
-
             logger.info(f"Đang khởi chạy shifting.py...")
-            # Popen sẽ tự động xử lý việc đặt các đối số trong dấu ngoặc kép nếu cần
             self.shifting_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
             threading.Thread(target=self._read_shifting_output, args=(self.shifting_process.stdout,), daemon=True).start()
             threading.Thread(target=self._log_process_errors, args=(self.shifting_process.stderr, "SHIFTING"), daemon=True).start()
@@ -760,6 +735,12 @@ class AppGUI:
         self.main_settings_window, self.chart_window, self.settings_window, self.classification_win = None, None, None, None
         self.broker_var, self.port_var, self.user_var, self.pass_var, self.pub_topic_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
         self.warning_threshold_var, self.critical_threshold_var, self.sounds_dir_var, self.test_sound_path_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
+        
+        self.gnss_belief_state_var = tk.StringVar(value="---"); self.gnss_motion_model_var = tk.StringVar(value="---")
+        self.gnss_velocity_var = tk.StringVar(value="---"); self.gnss_uncertainty_var = tk.StringVar(value="---")
+        self.qrf_trend_vel_var = tk.StringVar(value="---"); self.qrf_transients_var = tk.StringVar(value="---")
+        self.belief_vars = {"Stable": tk.DoubleVar(value=0), "SlowCreep": tk.DoubleVar(value=0), "RapidFailure": tk.DoubleVar(value=0)}
+
         self.create_widgets(); self.load_initial_data_to_vars(); self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window); self.root.app_instance = self
     
@@ -787,19 +768,43 @@ class AppGUI:
         right.grid_rowconfigure(1, weight=1); right.grid_columnconfigure(0, weight=1)
         self.status_label = ttk.Label(right, text="", font=("Arial", 11, "bold")); self.status_label.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         self.notebook = ttk.Notebook(right); self.notebook.grid(row=1, column=0, sticky="nsew")
-        tabs = {'gnss': ' Phân tích Dịch chuyển GNSS ', 'water': ' Cảnh báo Nước ', 'overview': ' Nhật ký Tổng quan ', 'long_term': ' Phân tích Dài hạn '}
+        tabs = {'gnss': ' Trung tâm Tình báo GNSS ', 'water': ' Cảnh báo Nước ', 'overview': ' Nhật ký Tổng quan ', 'long_term': ' Phân tích Dài hạn '}
         for key, text in tabs.items(): setattr(self, f"{key}_tab", ttk.Frame(self.notebook, padding=5)); self.notebook.add(getattr(self, f"{key}_tab"), text=text)
         self.create_gnss_tab(self.gnss_tab); self.create_water_tab(self.water_tab); self.create_overview_tab(self.overview_tab); self.create_long_term_tab(self.long_term_tab)
     
     def create_gnss_tab(self, parent_tab):
         parent_tab.grid_rowconfigure(1, weight=1); parent_tab.grid_columnconfigure(0, weight=1)
-        dashboard_frame = ttk.LabelFrame(parent_tab, text="Bảng điều khiển Giám sát Dịch chuyển", padding=10); dashboard_frame.grid(row=0, column=0, sticky="ew", pady=5)
-        self.create_gnss_dashboard(dashboard_frame)
+        dashboard_frame = ttk.Frame(parent_tab); dashboard_frame.grid(row=0, column=0, sticky="ew", pady=5)
+        dashboard_frame.grid_columnconfigure(1, weight=1)
+        belief_frame = ttk.LabelFrame(dashboard_frame, text="Tình trạng & Niềm tin Hệ thống", padding=10); belief_frame.grid(row=0, column=0, sticky="ns", padx=(0,10))
+        ttk.Label(belief_frame, text="TRẠNG THÁI ƯỚC TÍNH:", font=('Arial', 10, 'bold')).pack(anchor="w")
+        ttk.Label(belief_frame, textvariable=self.gnss_belief_state_var, font=('Arial', 14, 'bold'), foreground="blue").pack(anchor="w", pady=(0, 10))
+        self.belief_bars = {}
+        for state, var in self.belief_vars.items():
+            ttk.Label(belief_frame, text=f"Niềm tin '{state}':").pack(anchor="w", pady=(5,0))
+            progress = ttk.Progressbar(belief_frame, variable=var, maximum=100, bootstyle="info")
+            progress.pack(fill="x", expand=True); self.belief_bars[state] = progress
+        motion_frame = ttk.LabelFrame(dashboard_frame, text="Phân tích Chuyển động", padding=10); motion_frame.grid(row=0, column=1, sticky="nsew", padx=(0,10))
+        motion_frame.grid_columnconfigure(1, weight=1)
+        def add_metric_label(parent, text, row):
+            ttk.Label(parent, text=text, font=('Arial', 10, 'bold')).grid(row=row, column=0, sticky="w", padx=5, pady=3)
+            var = tk.StringVar(value="---"); ttk.Label(parent, textvariable=var, font=('Arial', 10, 'normal')).grid(row=row, column=1, sticky="w", padx=5, pady=3); return var
+        self.gnss_motion_model_var = add_metric_label(motion_frame, "Mô hình Phù hợp nhất:", 0)
+        self.gnss_velocity_var = add_metric_label(motion_frame, "Vận tốc 3D Ước tính:", 1)
+        self.gnss_uncertainty_var = add_metric_label(motion_frame, "Độ Bất định Vị trí:", 2)
+        qrf_frame = ttk.LabelFrame(dashboard_frame, text="Đánh giá Tình báo (QRF)", padding=10); qrf_frame.grid(row=0, column=2, sticky="ns")
+        qrf_frame.grid_columnconfigure(0, weight=1); qrf_frame.grid_rowconfigure(1, weight=1)
+        self.qrf_trend_vel_var = add_metric_label(qrf_frame, "Vận tốc Xu hướng (Wavelet):", 0)
+        self.qrf_transients_var = add_metric_label(qrf_frame, "Số Sự kiện Tức thời:", 1)
+        ttk.Label(qrf_frame, text="Đánh giá của Hệ thống:", font=('Arial', 10, 'bold')).grid(row=2, column=0, sticky="nw", padx=5, pady=(10,0))
+        self.qrf_assessment_text = tk.Text(qrf_frame, height=3, width=35, wrap="word", relief="solid", borderwidth=1, font=('Arial', 9))
+        self.qrf_assessment_text.grid(row=3, column=0, sticky="nsew", padx=5, pady=5)
+        self.qrf_assessment_text.insert("1.0", "Chờ báo cáo chiến lược..."); self.qrf_assessment_text.config(state="disabled")
         sheet_frame = ttk.Frame(parent_tab); sheet_frame.grid(row=1, column=0, sticky="nsew", pady=(10,0))
-        gnss_headers = ["Thời gian", "Tốc độ ngang\n(mm/s)", "Tốc độ đứng\n(mm/s)", "Hướng\n(°)", "Gia tốc ngang\n(mm/s²)", "Tổng dịch chuyển\n(m)", "Phân loại"]
+        gnss_headers = ["Thời gian", "Trạng thái\nƯớc tính", "Vận tốc 3D\n(mm/s)", "Độ Bất định\n(mm)", "Mô hình\nChuyển động", "Đánh giá Hệ thống"]
         self.sheet_gnss = Sheet(sheet_frame, headers=gnss_headers, show_row_index=True); self.sheet_gnss.pack(fill=tk.BOTH, expand=True)
         self.sheet_gnss.set_options(font=("Arial", 10, "normal"), header_font=("Arial", 9, "bold"), align="center")
-        self.sheet_gnss.column_width(column=0, width=80); self.sheet_gnss.column_width(column=6, width=120)
+        for i, w in enumerate([80, 120, 100, 100, 120, 250]): self.sheet_gnss.column_width(column=i, width=w)
         ttk.Button(parent_tab, text="Lưu Bảng Phân tích GNSS (CSV)", command=self.save_gnss_to_csv, bootstyle="info-outline").grid(row=2, column=0, sticky='e', pady=5)
 
     def create_water_tab(self, parent_tab):
@@ -834,7 +839,7 @@ class AppGUI:
         ttk.Button(parent_tab, text="Tải và Phân tích Dữ liệu Dài hạn", command=self.run_long_term_analysis, bootstyle="primary").grid(row=2, column=0, sticky="e", pady=10)
 
     def run_long_term_analysis(self):
-        log_path = os.path.join("shifting", "long_term_displacement.jsonl")
+        log_path = os.path.join("shifting_bayesian", "long_term_displacement.jsonl")
         if not os.path.exists(log_path): messagebox.showwarning("Không tìm thấy dữ liệu", "Không tìm thấy file log dài hạn. Hệ thống cần chạy qua ít nhất một ngày để tạo dữ liệu.", parent=self.root); return
         checkpoints = []
         try:
@@ -857,31 +862,6 @@ class AppGUI:
         self.lt_ax.set_title("Dịch chuyển Tích lũy Theo Thời gian", fontsize=14); self.lt_ax.set_xlabel("Số ngày kể từ khi bắt đầu giám sát", fontsize=12)
         self.lt_ax.set_ylabel("Tổng dịch chuyển (mm)", fontsize=12); self.lt_ax.grid(True); self.lt_fig.tight_layout(); self.lt_canvas.draw()
     
-    def create_gnss_dashboard(self, parent):
-        parent.grid_columnconfigure(1, weight=1)
-        self.compass_canvas = tk.Canvas(parent, width=150, height=150, bg='white', highlightthickness=0)
-        self.compass_canvas.grid(row=0, column=0, rowspan=5, padx=(10, 20), pady=5); self.draw_compass_base()
-        def add_metric_label(text, row):
-            ttk.Label(parent, text=text, font=('Arial', 10, 'bold')).grid(row=row, column=1, sticky='w', padx=5)
-            var = tk.StringVar(value="---"); ttk.Label(parent, textvariable=var, font=('Arial', 10, 'normal')).grid(row=row, column=2, sticky='w', padx=5)
-            return var
-        self.h_speed_var = add_metric_label("Tốc độ ngang:", 0); self.v_speed_var = add_metric_label("Tốc độ đứng:", 1)
-        self.direction_var = add_metric_label("Hướng dịch chuyển:", 2); self.acceleration_var = add_metric_label("Gia tốc ngang:", 3)
-        self.displacement_var = add_metric_label("Tổng dịch chuyển:", 4)
-
-    def draw_compass_base(self):
-        w, h = 150, 150; self.compass_canvas.create_oval(5, 5, w-5, h-5, outline='gray', width=1)
-        for i in range(0, 360, 30):
-            rad = math.radians(i)
-            self.compass_canvas.create_line(w/2 + 65*math.sin(rad), h/2 - 65*math.cos(rad), w/2 + 70*math.sin(rad), h/2 - 70*math.cos(rad), fill='gray')
-        self.compass_canvas.create_text(w/2, 15, text="N", font=('Arial', 10, 'bold')); self.compass_canvas.create_text(w/2, h-15, text="S", font=('Arial', 10, 'bold'))
-        self.compass_canvas.create_text(15, h/2, text="W", font=('Arial', 10, 'bold')); self.compass_canvas.create_text(w-15, h/2, text="E", font=('Arial', 10, 'bold'))
-        self.compass_needle = self.compass_canvas.create_line(w/2, h/2, w/2, 25, arrow=tk.LAST, width=3, fill='red')
-
-    def update_compass_needle(self, angle_deg):
-        w, h = 150, 150; angle_rad = math.radians(angle_deg); end_x = w/2 + 60 * math.sin(angle_rad); end_y = h/2 - 60 * math.cos(angle_rad)
-        self.compass_canvas.coords(self.compass_needle, w/2, h/2, end_x, end_y)
-
     def periodic_update(self):
         if not self.root.winfo_exists(): return
         for data_type, item in self.backend.get_gui_updates():
@@ -896,30 +876,53 @@ class AppGUI:
                 if report_type == "HEARTBEAT":
                     self.backend.last_shifting_heartbeat = time.time()
                     if not self.backend.is_shifting_responsive: logger.info("Tiến trình Shifting đã phản hồi trở lại."); self.backend.is_shifting_responsive = True
-                elif report_type == "collection_status": self.backend.temp_status_text = f"SHIFTING: Đang thu thập dữ liệu... [{item.get('collected',0)}/{item.get('total','N/A')}]"
-                elif report_type == "ultimate_analysis_report": self.backend.temp_status_text = None; self.update_gnss_tab(item); self.update_overview_with_gnss_report(item)
+                elif report_type == "particle_filter_update":
+                    self.backend.temp_status_text = None
+                    self.update_gnss_dashboard_simple(item)
+                elif report_type == "strategic_intelligence_report":
+                    self.backend.temp_status_text = None
+                    self.update_gnss_dashboard_advanced(item)
             elif data_type == "gnss_analysis_record": self.sheet_gnss.insert_row(item)
         self.update_status_label()
         if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.update_plot()
         self.root.after(250, self.periodic_update)
 
-    def update_gnss_tab(self, item_data):
-        if 'analysis_data' in item_data and item_data['analysis_data']:
-            data = item_data['analysis_data']
-            h_speed, v_speed, direction, accel, displace = (data.get('horizontal_velocity_mmps', 0), data.get('vertical_velocity_mps', 0), data.get('direction_degrees', 0), data.get('horizontal_acceleration_mmps2', 0), data.get('total_displacement_m', 0))
-            self.h_speed_var.set(f"{h_speed:.4f} mm/s"); v_speed_text = f"{abs(v_speed):.4f} mm/s {'(Lún xuống)' if v_speed < 0 else '(Trồi lên)'}"
-            self.v_speed_var.set(v_speed_text); self.direction_var.set(f"{direction:.2f}°"); self.acceleration_var.set(f"{accel:.4f} mm/s²"); self.displacement_var.set(f"{displace:.3f} m")
-            self.update_compass_needle(direction)
-        ts = datetime.fromtimestamp(item_data.get('timestamp', time.time())).strftime("%H:%M:%S")
-        analysis = item_data.get('analysis_data', {}); classification = item_data.get('classification_name', 'N/A')
-        gnss_record = [ts, f"{analysis.get('horizontal_velocity_mmps', 0):.4f}", f"{analysis.get('vertical_velocity_mps', 0):.4f}", f"{analysis.get('direction_degrees', 0):.2f}", f"{analysis.get('horizontal_acceleration_mmps2', 0):.4f}", f"{analysis.get('total_displacement_m', 0):.3f}", classification]
+    def update_gnss_dashboard_advanced(self, report):
+        belief = report.get("belief_state_vector", {}); most_likely_state = report.get("most_likely_state", "---")
+        self.gnss_belief_state_var.set(most_likely_state)
+        for state, var in self.belief_vars.items():
+            prob = belief.get(state, 0) * 100; var.set(prob)
+            if state == "RapidFailure" and prob > 50: self.belief_bars[state].config(bootstyle="danger")
+            elif state == "SlowCreep" and prob > 60: self.belief_bars[state].config(bootstyle="warning")
+            else: self.belief_bars[state].config(bootstyle="info")
+        stratcom = report.get("stratcom_analysis", {}); self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
+        qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
+        self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+        self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+        self.qrf_transients_var.set(str(qrf.get('transient_event_count', '---')))
+        self.qrf_assessment_text.config(state="normal"); self.qrf_assessment_text.delete("1.0", "end")
+        self.qrf_assessment_text.insert("1.0", stratcom.get("assessment", "Không có đánh giá.")); self.qrf_assessment_text.config(state="disabled")
+        ts = datetime.fromtimestamp(report.get('timestamp', time.time())).strftime("%H:%M:%S")
+        gnss_record = [ts, most_likely_state, f"{qrf.get('trend_velocity_mmps', 0):.4f}", self.gnss_uncertainty_var.get().replace(' mm',''), stratcom.get("most_likely_motion_model", "---"), stratcom.get("assessment", "")]
         self.backend.gnss_analysis_data.append(gnss_record); self.sheet_gnss.insert_row(gnss_record)
-        last_row_index = self.sheet_gnss.get_total_rows() - 1
-        if last_row_index >= 0:
-            self.sheet_gnss.see(row=last_row_index)
-            if "rapid" in classification.lower(): self.sheet_gnss.highlight_rows([last_row_index], bg="#F8D7DA")
-            elif "moderate" in classification.lower(): self.sheet_gnss.highlight_rows([last_row_index], bg="#FFF3CD")
-            else: self.sheet_gnss.highlight_rows([last_row_index], bg="#E9ECEF")
+        self.highlight_gnss_row(self.sheet_gnss.get_total_rows() - 1, most_likely_state)
+        
+    def update_gnss_dashboard_simple(self, report):
+        vel = report.get("estimated_velocity_mmps", 0); uncertainty = report.get("position_uncertainty_mm", 0)
+        self.gnss_velocity_var.set(f"{vel:.4f} mm/s"); self.gnss_uncertainty_var.set(f"{uncertainty:.2f} mm")
+
+    def update_overview_with_stratcom_report(self, report):
+        ts = report.get('timestamp', time.time()); state = report.get('most_likely_state', 'N/A')
+        assessment = report.get('stratcom_analysis', {}).get('assessment', 'N/A')
+        self.backend.log_to_overview("STRATCOM", assessment, state, ts)
+
+    def highlight_gnss_row(self, row_index, state):
+        if row_index < 0: return
+        state = state.lower()
+        if "failure" in state: bg = "#F8D7DA"
+        elif "creep" in state: bg = "#FFF3CD"
+        else: bg = "#E9ECEF"
+        self.sheet_gnss.highlight_rows([row_index], bg=bg)
 
     def update_water_tab(self, record):
         self.sheet_water.insert_row(record); last_row_index = self.sheet_water.get_total_rows() - 1
@@ -933,18 +936,13 @@ class AppGUI:
         self.sheet_overview.insert_row(record); last_row_index = self.sheet_overview.get_total_rows() - 1
         if last_row_index >= 0:
             self.sheet_overview.see(row=last_row_index); status = record[3].upper()
-            if "MAXIMUM" in status or "CRITICAL" in status or "NGUY HIEM" in status or "RAPID" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#F8D7DA")
-            elif "HIGH" in status or "WARN" in status or "CANH BAO" in status or "MODERATE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#FFF3CD")
+            if "MAXIMUM" in status or "CRITICAL" in status or "NGUY HIEM" in status or "RAPID" in status or "FAILURE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#F8D7DA")
+            elif "HIGH" in status or "WARN" in status or "CANH BAO" in status or "MODERATE" in status or "CREEP" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#FFF3CD")
             elif "SAFE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#D4EDDA")
             else: self.sheet_overview.highlight_rows([last_row_index], bg="#E9ECEF")
-
-    def update_overview_with_gnss_report(self, item_data):
-        ts = item_data.get('timestamp', time.time()); classification = item_data.get('classification_name', 'N/A')
-        vel = item_data.get('classification_velocity_mm_s', 0); message = f"Vận tốc 3D: {vel:.4f} mm/s"
-        self.backend.log_to_overview("Phân tích GNSS", message, classification, ts)
-
+    
     def save_overview_to_csv(self): self._save_data_to_csv(list(self.backend.overview_log_data), ["Thời gian", "Nguồn", "Thông điệp", "Trạng thái"])
-    def save_gnss_to_csv(self): self._save_data_to_csv(list(self.backend.gnss_analysis_data), ["Thời gian", "Tốc độ ngang (mm/s)", "Tốc độ đứng (mm/s)", "Hướng (°)", "Gia tốc ngang (mm/s²)", "Tổng dịch chuyển (m)", "Phân loại"])
+    def save_gnss_to_csv(self): self._save_data_to_csv(list(self.backend.gnss_analysis_data), ["Thời gian", "Trạng thái Ước tính", "Vận tốc 3D (mm/s)", "Độ Bất định (mm)", "Mô hình Chuyển động", "Đánh giá Hệ thống"])
     def save_water_to_csv(self): self._save_data_to_csv(list(self.backend.water_data), ["Tên Cảm biến", "Giá trị (m)", "Trạng thái", "Thời gian"])
 
     def _save_data_to_csv(self, data_to_save, headers):
@@ -1024,37 +1022,19 @@ class AppGUI:
         return errors
 
     def update_status_label(self):
-        # Ưu tiên hiển thị các trạng thái tạm thời (lỗi, đang thu thập)
         if self.backend.temp_status_text:
-            text_to_show = self.backend.temp_status_text
-            color_to_show = "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
-        
-        # Nếu không có trạng thái tạm thời, hiển thị trạng thái hoạt động chính
+            text_to_show, color_to_show = self.backend.temp_status_text, "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
         elif self.backend.listening:
-            # Nếu đang ở chế độ TỰ ĐỘNG
             am = self.backend.alert_manager
             active_status, w_lv, g_lv = am.active_alert_name, am.water_sm.current_level, am.gnss_sm.current_level
-            
-            # Xây dựng chuỗi trạng thái chi tiết
             text_to_show = f"TỰ ĐỘNG | Cảnh báo: {active_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
-            
-            # Quyết định màu sắc dựa trên mức độ ưu tiên của cảnh báo
             active_priority = am.ALERT_PRIORITY.get(active_status, 0)
-            if active_priority >= 7: # Mức CRITICAL trở lên
-                color_to_show = "red"
-            elif active_priority >= 3: # Mức WARN trở lên
-                color_to_show = "orange"
-            else: # Mức SAFE
-                color_to_show = "green"
-        
+            if active_priority >= 7: color_to_show = "red"
+            elif active_priority >= 3: color_to_show = "orange"
+            else: color_to_show = "green"
         else:
-            # Nếu không phải listening, hiển thị trạng thái kết nối chung (THỦ CÔNG, LỖI, MẤT KẾT NỐI)
-            text_to_show = self.backend.status_text
-            color_to_show = self.backend.status_color
-
-        # Chỉ cập nhật giao diện nếu có sự thay đổi để tối ưu hiệu năng
-        if self.status_label.cget("text") != text_to_show:
-            self.status_label.config(text=text_to_show, foreground=color_to_show)
+            text_to_show = self.backend.status_text; color_to_show = self.backend.status_color
+        if self.status_label.cget("text") != text_to_show: self.status_label.config(text=text_to_show, foreground=color_to_show)
 
     def on_test_siren_click(self):
         if not self.backend.test_siren_relay(): messagebox.showwarning("Không thể thực hiện", "Kiểm tra còi thất bại. Xem log để biết chi tiết.", parent=self.root)
