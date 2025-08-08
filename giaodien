@@ -939,86 +939,119 @@ class AppGUI:
     
     def periodic_update(self):
         if not self.root.winfo_exists(): return
+
+        # Duyệt qua tất cả các cập nhật trong hàng đợi
         for data_type, item in self.backend.get_gui_updates():
             if data_type == "clear_all":
-                self.sheet_overview.set_sheet_data(data=[]); self.sheet_gnss.set_sheet_data(data=[]); self.sheet_water.set_sheet_data(data=[])
-                if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.update_plot()
+                self.sheet_overview.set_sheet_data(data=[])
+                self.sheet_gnss.set_sheet_data(data=[])
+                self.sheet_water.set_sheet_data(data=[])
+                if self.chart_window and self.chart_window.root.winfo_exists():
+                    self.chart_window.update_plot()
                 logger.info("GUI đã nhận tín hiệu và xóa tất cả các bảng.")
-            elif data_type == "water_sensor": self.update_water_tab(item)
-            elif data_type == "overview_log": self.update_overview_tab(item)
+
+            elif data_type == "water_sensor":
+                self.update_water_tab(item)
+
+            elif data_type == "overview_log":
+                self.update_overview_tab(item)
+
+            # --- BẮT ĐẦU KHỐI LOGIC MỚI CHO GNSS ---
             elif data_type == "gnss_report":
                 report_type = item.get("type")
+
                 if report_type == "HEARTBEAT":
+                    # Cập nhật thời gian HEARTBEAT để hệ thống biết shifting.py vẫn chạy
                     self.backend.last_shifting_heartbeat = time.time()
-                    if not self.backend.is_shifting_responsive: logger.info("Tiến trình Shifting đã phản hồi trở lại."); self.backend.is_shifting_responsive = True
+                    if not self.backend.is_shifting_responsive:
+                        logger.info("Tiến trình Shifting đã phản hồi trở lại.")
+                        self.backend.is_shifting_responsive = True
+                        self.backend.temp_status_text = None # Xóa thông báo lỗi
+
+                elif report_type == "stabilization_progress":
+                    # Hiển thị tiến trình ổn định lên thanh trạng thái
+                    self.backend.temp_status_text = item.get("message", "Đang thu thập dữ liệu...")
+
                 elif report_type == "particle_filter_update":
+                    # Xóa trạng thái tạm thời và cập nhật các chỉ số cơ bản
                     self.backend.temp_status_text = None
                     self.update_gnss_dashboard_simple(item)
+
                 elif report_type == "strategic_intelligence_report":
+                    # Xóa trạng thái tạm thời và cập nhật toàn bộ dashboard
                     self.backend.temp_status_text = None
                     self.update_gnss_dashboard_advanced(item)
-            elif data_type == "gnss_analysis_record": self.sheet_gnss.insert_row(item)
+                    # Ghi một bản ghi vào nhật ký tổng quan
+                    self.update_overview_with_stratcom_report(item)
+            # --- KẾT THÚC KHỐI LOGIC MỚI ---
+
+            elif data_type == "gnss_analysis_record":
+                self.sheet_gnss.insert_row(item)
+
+        # Cập nhật thanh trạng thái và biểu đồ
         self.update_status_label()
-        if self.chart_window and self.chart_window.root.winfo_exists(): self.chart_window.update_plot()
-        self.root.after(250, self.periodic_update)
+        if self.chart_window and self.chart_window.root.winfo_exists():
+            self.chart_window.update_plot()
 
-        def update_gnss_dashboard_advanced(self, report):
-        # Cập nhật Bảng điều khiển Niềm tin
-                belief = report.get("belief_state_vector", {})
-                most_likely_state = report.get("most_likely_state", "---")
-                self.gnss_belief_state_var.set(most_likely_state)
-        
-                for state, var in self.belief_vars.items():
-                    prob = belief.get(state, 0) * 100
-                    var.set(prob)
-            # Đổi màu thanh tiến trình theo mức độ nguy hiểm của trạng thái
-                    if state == "RapidFailure" and prob > 50:
-                        self.belief_bars[state].config(bootstyle="danger")
-                    elif state == "SlowCreep" and prob > 60:
-                        self.belief_bars[state].config(bootstyle="warning")
-                    else:
-                        self.belief_bars[state].config(bootstyle="info")
-
-        # Cập nhật Phân tích Chuyển động
-                stratcom = report.get("stratcom_analysis", {})
-                self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
-        
-                qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
-                self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
-        
-        # ### <<< KHÔI PHỤC CẬP NHẬT LA BÀN VÀ HƯỚNG >>> ###
-        # Lưu ý: Cần đảm bảo shifting.py gửi 'direction_degrees' trong báo cáo chiến lược
-                direction = qrf.get("direction_degrees", 0) 
-                self.direction_var.set(f"{direction:.2f}°")
-                self.update_compass_needle(direction)
-        # ### <<< KẾT THÚC KHÔI PHỤC >>> ###
-
-        # Cập nhật Đánh giá QRF
-                self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
-                self.qrf_transients_var.set(str(qrf.get('transient_event_count', '---')))
-        
-                self.qrf_assessment_text.config(state="normal")
-                self.qrf_assessment_text.delete("1.0", "end")
-                self.qrf_assessment_text.insert("1.0", stratcom.get("assessment", "Không có đánh giá."))
-                self.qrf_assessment_text.config(state="disabled")
-
-        # Cập nhật Bảng ghi
-                ts = datetime.fromtimestamp(report.get('timestamp', time.time())).strftime("%H:%M:%S")
-                gnss_record = [
-                    ts,
-                    most_likely_state,
-                    f"{qrf.get('trend_velocity_mmps', 0):.4f}",
-                    self.gnss_uncertainty_var.get().replace(' mm',''), # Lấy từ simple update
-                    stratcom.get("most_likely_motion_model", "---"),
-                    stratcom.get("assessment", "")
-                ]
-                self.backend.gnss_analysis_data.append(gnss_record)
-                self.sheet_gnss.insert_row(gnss_record)
-                self.highlight_gnss_row(self.sheet_gnss.get_total_rows() - 1, most_likely_state)
-        
+        self.root.after(250, self.periodic_update)    
+    
     def update_gnss_dashboard_simple(self, report):
         vel = report.get("estimated_velocity_mmps", 0); uncertainty = report.get("position_uncertainty_mm", 0)
         self.gnss_velocity_var.set(f"{vel:.4f} mm/s"); self.gnss_uncertainty_var.set(f"{uncertainty:.2f} mm")
+    
+    def update_gnss_dashboard_advanced(self, report):
+        # Cập nhật Bảng điều khiển Niềm tin
+        belief = report.get("belief_state_vector", {})
+        most_likely_state = report.get("most_likely_state", "---")
+        self.gnss_belief_state_var.set(most_likely_state)
+        
+        for state, var in self.belief_vars.items():
+            prob = belief.get(state, 0) * 100
+            var.set(prob)
+            # Đổi màu thanh tiến trình theo mức độ nguy hiểm của trạng thái
+            if state == "RapidFailure" and prob > 50:
+                self.belief_bars[state].config(bootstyle="danger")
+            elif state == "SlowCreep" and prob > 60:
+                self.belief_bars[state].config(bootstyle="warning")
+            else:
+                self.belief_bars[state].config(bootstyle="info")
+
+        # Cập nhật Phân tích Chuyển động
+        stratcom = report.get("stratcom_analysis", {})
+        self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
+        
+        qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
+        self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+        
+        # --- SỬA LỖI & KHÔI PHỤC: Cập nhật La bàn và Hướng ---
+        # shifting.py gửi 'direction_degrees' trong báo cáo chiến lược
+        direction = qrf.get("direction_degrees", 0) 
+        self.direction_var.set(f"{direction:.2f}°")
+        self.update_compass_needle(direction)
+        # --- KẾT THÚC SỬA LỖI ---
+
+        # Cập nhật Đánh giá QRF
+        self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
+        self.qrf_transients_var.set(str(qrf.get('transient_event_count', '---')))
+        
+        self.qrf_assessment_text.config(state="normal")
+        self.qrf_assessment_text.delete("1.0", "end")
+        self.qrf_assessment_text.insert("1.0", stratcom.get("assessment", "Không có đánh giá."))
+        self.qrf_assessment_text.config(state="disabled")
+
+        # Cập nhật Bảng ghi
+        ts = datetime.fromtimestamp(report.get('timestamp', time.time())).strftime("%H:%M:%S")
+        gnss_record = [
+            ts,
+            most_likely_state,
+            f"{qrf.get('trend_velocity_mmps', 0):.4f}",
+            self.gnss_uncertainty_var.get().replace(' mm',''), # Lấy từ simple update
+            stratcom.get("most_likely_motion_model", "---"),
+            stratcom.get("assessment", "")
+        ]
+        self.backend.gnss_analysis_data.append(gnss_record)
+        self.sheet_gnss.insert_row(gnss_record)
+        self.highlight_gnss_row(self.sheet_gnss.get_total_rows() - 1, most_likely_state)
 
     def update_overview_with_stratcom_report(self, report):
         ts = report.get('timestamp', time.time()); state = report.get('most_likely_state', 'N/A')
@@ -1131,19 +1164,36 @@ class AppGUI:
         return errors
 
     def update_status_label(self):
+        # Ưu tiên 1: Hiển thị thông báo trạng thái tạm thời (lỗi, tiến trình)
         if self.backend.temp_status_text:
-            text_to_show, color_to_show = self.backend.temp_status_text, "blue" if "Đang thu thập" in self.backend.temp_status_text else "red"
+            text_to_show = self.backend.temp_status_text
+            # Đặt màu chữ dựa trên nội dung
+            if "LỖI" in text_to_show or "không phản hồi" in text_to_show:
+                color_to_show = "red"
+            else:
+                color_to_show = "blue"
+        # Ưu tiên 2: Hiển thị trạng thái khi đang ở chế độ Tự động
         elif self.backend.listening:
             am = self.backend.alert_manager
-            active_status, w_lv, g_lv = am.active_alert_name, am.water_sm.current_level, am.gnss_sm.current_level
+            active_status = am.active_alert_name
+            w_lv = am.water_sm.current_level
+            g_lv = am.gnss_sm.current_level
             text_to_show = f"TỰ ĐỘNG | Cảnh báo: {active_status} (Nước: L{w_lv}, GNSS: L{g_lv})"
             active_priority = am.ALERT_PRIORITY.get(active_status, 0)
-            if active_priority >= 7: color_to_show = "red"
-            elif active_priority >= 3: color_to_show = "orange"
-            else: color_to_show = "green"
+            if active_priority >= 7:
+                color_to_show = "red"
+            elif active_priority >= 3:
+                color_to_show = "orange"
+            else:
+                color_to_show = "green"
+        # Ưu tiên 3: Hiển thị trạng thái khi ở chế độ Thủ công hoặc các trạng thái khác
         else:
-            text_to_show = self.backend.status_text; color_to_show = self.backend.status_color
-        if self.status_label.cget("text") != text_to_show: self.status_label.config(text=text_to_show, foreground=color_to_show)
+            text_to_show = self.backend.status_text
+            color_to_show = self.backend.status_color
+
+        # Chỉ cập nhật label nếu nội dung thay đổi để tránh nhấp nháy
+        if self.status_label.cget("text") != text_to_show:
+            self.status_label.config(text=text_to_show, foreground=color_to_show)
 
     def on_test_siren_click(self):
         if not self.backend.test_siren_relay(): messagebox.showwarning("Không thể thực hiện", "Kiểm tra còi thất bại. Xem log để biết chi tiết.", parent=self.root)
