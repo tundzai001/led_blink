@@ -976,6 +976,13 @@ class AppGUI:
                     # Xóa trạng thái tạm thời và cập nhật các chỉ số cơ bản
                     self.backend.temp_status_text = None
                     self.update_gnss_dashboard_simple(item)
+                
+                elif report_type == "frequency_analysis_complete":
+                    # Ghi thông báo này vào Nhật ký Tổng quan
+                    ts = item.get("timestamp", time.time())
+                    message = item.get("message", "Phân tích tần suất hoàn tất.")
+                    status = item.get("status", "INFO")
+                    self.backend.log_to_overview("Hệ thống Phân tích", message, status, ts)
 
                 elif report_type == "strategic_intelligence_report":
                     # Xóa trạng thái tạm thời và cập nhật toàn bộ dashboard
