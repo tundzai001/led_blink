@@ -1064,7 +1064,7 @@ class AppGUI:
             self.highlight_gnss_row(last_row_index, most_likely_state)
             # Yêu cầu bảng cuộn đến dòng mới nhất
             self.sheet_gnss.see(row=last_row_index)
-            self.sheet_gnss.deselect_all()
+            self.sheet_gnss.deselect()
         # --- KẾT THÚC THAY ĐỔI ---
 
     def update_overview_with_stratcom_report(self, report):
@@ -1088,7 +1088,7 @@ class AppGUI:
             elif status == "CANH BAO": self.sheet_water.highlight_rows([last_row_index], bg="#FFF3CD")
             else: self.sheet_water.highlight_rows([last_row_index], bg="#D4EDDA")
             self.sheet_water.see(row=last_row_index)
-            self.sheet_water.deselect_all()
+            self.sheet_water.deselect()
             
     def update_overview_tab(self, record):
         self.sheet_overview.insert_row(record); last_row_index = self.sheet_overview.get_total_rows() - 1
@@ -1098,7 +1098,7 @@ class AppGUI:
             elif "HIGH" in status or "WARN" in status or "CANH BAO" in status or "MODERATE" in status or "CREEP" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#FFF3CD")
             elif "SAFE" in status: self.sheet_overview.highlight_rows([last_row_index], bg="#D4EDDA")
             else: self.sheet_overview.highlight_rows([last_row_index], bg="#E9ECEF")
-            self.sheet_overview.deselect_all()
+            self.sheet_overview.deselect()
     
     def save_overview_to_csv(self): self._save_data_to_csv(list(self.backend.overview_log_data), ["Thời gian", "Nguồn", "Thông điệp", "Trạng thái"])
     def save_gnss_to_csv(self): self._save_data_to_csv(list(self.backend.gnss_analysis_data), ["Thời gian", "Trạng thái Ước tính", "Vận tốc 3D (mm/s)", "Độ Bất định (mm)", "Mô hình Chuyển động", "Đánh giá Hệ thống"])
