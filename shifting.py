@@ -139,8 +139,6 @@ def verify_checksum(sentence):
         main_part = parts[0][1:]
         checksum_part = parts[1]
 
-        # <<< THAY ĐỔI MỚI - ÁP DỤNG 1.3 >>>
-        # Kiểm tra định dạng của checksum để tránh xử lý không cần thiết
         if len(checksum_part) != 2 or not all(c in '0123456789ABCDEFabcdef' for c in checksum_part):
             logger.debug(f"Invalid checksum format: '{checksum_part}'")
             return False
@@ -246,8 +244,6 @@ class DataForensicsLab:
         current_drift = current_point['sys_ts'] - nmea_utc_ts
         if abs(current_drift) < 7200: # Chỉ xem xét drift trong khoảng 2 giờ
             self.time_drift_buffer.append(current_drift)
-            # <<< THAY ĐỔI MỚI - ÁP DỤNG 1.4 & 2.1 >>>
-            # Yêu cầu đủ số lượng mẫu để ước tính drift ổn định và giới hạn giá trị drift
             if len(self.time_drift_buffer) > 3:
                 estimated_drift_raw = np.median(list(self.time_drift_buffer))
                 # Giới hạn drift trong khoảng +/- 1 giờ để tránh các lỗi logic nghiêm trọng
@@ -318,8 +314,6 @@ class MasterControlEngine:
         self._transient_learning_buffer = deque(maxlen=int(self.constants.INITIAL_STABILIZATION_PERIOD - self.constants.ANALYSIS_WINDOW_FOR_FREQUENCY))
         self.dynamic_transient_threshold = 10
         self.points_since_last_pf_reset = 0
-        # <<< THAY ĐỔI MỚI - ÁP DỤNG 4.1 >>>
-        # Thêm cờ trạng thái để theo dõi độ ổn định của điểm gốc
         self.origin_is_unstable = False
 
     def process_payload(self, payload_str):
@@ -342,8 +336,6 @@ class MasterControlEngine:
                 if std_dev < 1.0 or self._origin_finding_attempts >= self.constants.ORIGIN_FINDING_ATTEMPT_LIMIT:
                     if std_dev >= 1.0:
                         logger.critical(f"Origin finding timed out. Forcing origin with high StdDev: {std_dev:.3f}m. ALL SUBSEQUENT DATA WILL HAVE THIS INITIAL OFFSET.")
-                        # <<< THAY ĐỔI MỚI - ÁP DỤNG 4.1 >>>
-                        # Đặt cờ báo hiệu gốc không ổn định
                         self.origin_is_unstable = True
                     
                     self.origin = self._origin_candidate_buffer[len(self._origin_candidate_buffer) // 2]
@@ -406,9 +398,6 @@ class MasterControlEngine:
             dt = verified_point['nmea_ts'] - last_point['nmea_ts']
             if dt <= 0.1:
                 return None
-            
-            # <<< THAY ĐỔI MỚI - ÁP DỤNG 2.2 >>>
-            # Giới hạn dt tối đa để ngăn chặn filter divergence do mất tín hiệu kéo dài
             if dt > self.constants.MAX_PREDICTION_DT:
                 logger.warning(f"Large time gap detected ({dt:.1f}s). Capping prediction dt to {self.constants.MAX_PREDICTION_DT}s to prevent divergence.")
                 dt = self.constants.MAX_PREDICTION_DT
@@ -421,9 +410,6 @@ class MasterControlEngine:
             self.l2_particle_filter.update(raw_enu_point, effective_hdop)
             
             estimated_state, covariance = self.l2_particle_filter.estimate()
-
-            # <<< THAY ĐỔI MỚI - ÁP DỤNG 3.1 >>>
-            # Kiểm tra ma trận hiệp phương sai có chứa giá trị không hợp lệ (NaN/Inf) không
             if not np.all(np.isfinite(covariance)):
                 logger.critical("FILTER DIVERGENCE! Covariance matrix contains NaN/Inf. Resetting filter and starting COOLDOWN.")
                 self.l2_particle_filter.reset()
@@ -575,17 +561,12 @@ class MasterControlEngine:
                 "model_probabilities": model_probs,
                 "assessment": assessment
             },
-            # <<< THAY ĐỔI MỚI - ÁP DỤNG 4.1 >>>
-            # Thêm metadata vào báo cáo để các hệ thống downstream có thể sử dụng
             "metadata": {
                 "origin_is_unstable": self.origin_is_unstable
             }
         }
     
     def _analyze_wavelet_mri(self):
-        # <<< THAY ĐỔI MỚI - ÁP DỤNG 4.3 >>>
-        # Để xử lý dữ liệu không đều, chúng ta sẽ nội suy (interpolate) dữ liệu
-        # vào một lưới thời gian đều đặn trước khi phân tích wavelet.
         if len(self.long_term_history) < 50: # Cần đủ điểm để nội suy và phân tích
             return {}
         
