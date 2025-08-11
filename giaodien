@@ -49,12 +49,12 @@ if not logger.handlers:
     file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     log_file_path = os.path.join(LOG_DIRECTORY, 'sensor_monitor.log')
-    file_handler = TimedRotatingFileHandler(log_file_path, when='midnight', interval=1, backupCount=30, encoding='utf-8')
+    file_handler = TimedRotatingFileHandler(log_file_path, when='midnight', interval=1, backupCount=7, encoding='utf-8')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
     error_log_file_path = os.path.join(LOG_DIRECTORY, 'sensor_monitor_error.log')
-    error_file_handler = TimedRotatingFileHandler(error_log_file_path, when='midnight', interval=1, backupCount=30, encoding='utf-8')
+    error_file_handler = TimedRotatingFileHandler(error_log_file_path, when='midnight', interval=1, backupCount=7, encoding='utf-8')
     error_file_handler.setLevel(logging.ERROR)
     error_file_handler.setFormatter(file_formatter)
     logger.addHandler(error_file_handler)
@@ -414,15 +414,14 @@ class Backend:
             logger.warning("Không có topic GNSS nào để khởi động shifting.py."); return
         try:
             classification_table_json = json.dumps(self.gnss_speed_classification)
-            
-            # ### <<< SỬA LỖI TRUYỀN ĐỐI SỐ >>> ###
             command = [
                 sys.executable, '-u', 'shifting.py',
                 '--broker', self.broker,
-                '--port', str(self.port)
+                '--port', str(self.port),
+                '--classification-table', classification_table_json
             ]
             
-            # Thêm các đối số tùy chọn
+            # Thêm các đối số tùy chọn nếu có
             if self.username: command.extend(['--username', self.username])
             if self.password: command.extend(['--password', self.password])
             
@@ -430,18 +429,22 @@ class Backend:
             for topic in self.gnss_topics:
                 command.extend(['--topic', topic])
                 
-            # Thêm bảng phân loại MỘT CÁCH AN TOÀN
-            command.extend(['--classification-table', classification_table_json])
-            # ### <<< KẾT THÚC SỬA LỖI >>> ###
-
-            logger.info(f"Đang khởi chạy shifting.py...")
-            # Popen sẽ tự động xử lý việc đặt các đối số trong dấu ngoặc kép nếu cần
+            # Ghi log lại lệnh ngắn gọn để gỡ lỗi
+            logger.info(f"Đang khởi chạy shifting.py với lệnh: {' '.join(command)}")
+            
+            # Phần còn lại của hàm không thay đổi
             self.shifting_process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='ignore')
+            
+            self.last_shifting_heartbeat = time.time()
+            self.is_shifting_responsive = True
+            self.temp_status_text = None
+
             threading.Thread(target=self._read_shifting_output, args=(self.shifting_process.stdout,), daemon=True).start()
             threading.Thread(target=self._log_process_errors, args=(self.shifting_process.stderr, "SHIFTING"), daemon=True).start()
-            logger.info("Đã khởi động tiến trình shifting.py và luồng đọc kết quả.")
+            logger.info("Đã khởi động tiến trình shifting.py và các luồng giám sát.")
+
         except Exception as e:
-            logger.error(f"Lỗi khởi động shifting.py: {e}")
+            logger.error(f"Lỗi nghiêm trọng khi khởi động shifting.py: {e}", exc_info=True)
             if self.shifting_process: self.shifting_process.kill()
             self.shifting_process = None
 
@@ -1011,31 +1014,30 @@ class AppGUI:
         belief = report.get("belief_state_vector", {})
         most_likely_state = report.get("most_likely_state", "---")
         self.gnss_belief_state_var.set(most_likely_state)
-        
+
         for state, var in self.belief_vars.items():
             prob = belief.get(state, 0) * 100
             var.set(prob)
-            # Đổi màu thanh tiến trình theo mức độ nguy hiểm của trạng thái
             if state == "RapidFailure" and prob > 50:
                 self.belief_bars[state].config(bootstyle="danger")
             elif state == "SlowCreep" and prob > 60:
                 self.belief_bars[state].config(bootstyle="warning")
             else:
                 self.belief_bars[state].config(bootstyle="info")
-
+        metadata = report.get("meta_data", {})
+        if metadata.get("origin_is_unstable", False):
+            self.some_warning_label.config(text="(!) Gốc không ổn định", foreground="orange")
+        else:
+            self.some_warning_label.config(text="")
         # Cập nhật Phân tích Chuyển động
         stratcom = report.get("stratcom_analysis", {})
         self.gnss_motion_model_var.set(stratcom.get("most_likely_motion_model", "---"))
         
         qrf = report.get("qrf_assessment", {}).get("wavelet_mri", {})
         self.gnss_velocity_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
-        
-        # --- SỬA LỖI & KHÔI PHỤC: Cập nhật La bàn và Hướng ---
-        # shifting.py gửi 'direction_degrees' trong báo cáo chiến lược
         direction = qrf.get("direction_degrees", 0) 
         self.direction_var.set(f"{direction:.2f}°")
         self.update_compass_needle(direction)
-        # --- KẾT THÚC SỬA LỖI ---
 
         # Cập nhật Đánh giá QRF
         self.qrf_trend_vel_var.set(f"{qrf.get('trend_velocity_mmps', 0):.4f} mm/s")
@@ -1060,12 +1062,9 @@ class AppGUI:
         self.sheet_gnss.insert_row(gnss_record)
         last_row_index = self.sheet_gnss.get_total_rows() - 1
         if last_row_index >= 0:
-            # Tô màu cho dòng mới dựa trên trạng thái
             self.highlight_gnss_row(last_row_index, most_likely_state)
-            # Yêu cầu bảng cuộn đến dòng mới nhất
             self.sheet_gnss.see(row=last_row_index)
             self.sheet_gnss.deselect()
-        # --- KẾT THÚC THAY ĐỔI ---
 
     def update_overview_with_stratcom_report(self, report):
         ts = report.get('timestamp', time.time()); state = report.get('most_likely_state', 'N/A')
