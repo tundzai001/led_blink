@@ -762,8 +762,12 @@ class AppGUI:
         self.qrf_trend_vel_var = tk.StringVar(value="---"); self.qrf_transients_var = tk.StringVar(value="---")
         self.belief_vars = {"Stable": tk.DoubleVar(value=0), "SlowCreep": tk.DoubleVar(value=0), "RapidFailure": tk.DoubleVar(value=0)}
 
+        self.some_warning_label = tk.Label(self.root, text="", font=("Helvetica", 10), fg="orange")
+        self.some_warning_label.pack(pady=5)
+
         self.create_widgets(); self.load_initial_data_to_vars(); self.root.after(250, self.periodic_update)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close_window); self.root.app_instance = self
+    
     
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10); main.pack(fill="both", expand=True)
