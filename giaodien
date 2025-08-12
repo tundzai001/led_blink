@@ -965,11 +965,16 @@ class AppGUI:
 
             # --- BẮT ĐẦU KHỐI LOGIC MỚI CHO GNSS ---
             elif data_type == "gnss_report":
+                # === THAY ĐỔI QUAN TRỌNG ===
+                # Coi bất kỳ tin nhắn nào từ shifting.py đều là một "nhịp tim" hợp lệ.
+                # Dòng này sẽ reset đồng hồ watchdog của led.py.
+                self.backend.last_shifting_heartbeat = time.time()
+                
+                # Lấy loại báo cáo để xử lý giao diện
                 report_type = item.get("type")
 
+                # Xử lý riêng cho HEARTBEAT để reset cờ "không phản hồi"
                 if report_type == "HEARTBEAT":
-                    # Cập nhật thời gian HEARTBEAT để hệ thống biết shifting.py vẫn chạy
-                    self.backend.last_shifting_heartbeat = time.time()
                     if not self.backend.is_shifting_responsive:
                         logger.info("Tiến trình Shifting đã phản hồi trở lại.")
                         self.backend.is_shifting_responsive = True
@@ -997,7 +1002,7 @@ class AppGUI:
                     self.update_gnss_dashboard_advanced(item)
                     # Ghi một bản ghi vào nhật ký tổng quan
                     self.update_overview_with_stratcom_report(item)
-            # --- KẾT THÚC KHỐI LOGIC MỚI ---
+            # --- KẾT THÚC KHỐI LOGIC GNSS ---
 
             elif data_type == "gnss_analysis_record":
                 self.sheet_gnss.insert_row(item)
@@ -1007,7 +1012,7 @@ class AppGUI:
         if self.chart_window and self.chart_window.root.winfo_exists():
             self.chart_window.update_plot()
 
-        self.root.after(250, self.periodic_update)    
+        self.root.after(250, self.periodic_update)
     
     def update_gnss_dashboard_simple(self, report):
         vel = report.get("estimated_velocity_mmps", 0); uncertainty = report.get("position_uncertainty_mm", 0)
