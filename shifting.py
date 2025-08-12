@@ -968,8 +968,14 @@ class MqttProcessor:
             cooldown_alert_level = 0
             cooldown_timeout = getattr(self.config, 'cooldown_watchdog_timeout_sec', 900) # 15 phút mặc định
             last_heartbeat_time = time.time()
+            HEARTBEAT_INTERVAL = 30
 
             while True:
+                if time.time() - last_heartbeat_time > HEARTBEAT_INTERVAL:
+                    heartbeat_report = {"type": "HEARTBEAT", "timestamp": time.time()}
+                    print(json.dumps(heartbeat_report), flush=True) # flush=True là rất quan trọng!
+                    last_heartbeat_time = time.time()
+                    
                 try:
                     payload = self.message_queue.get(timeout=1.0)
                     
