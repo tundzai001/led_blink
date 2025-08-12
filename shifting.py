@@ -308,7 +308,7 @@ class DataForensicsLab:
                 "wgs": {
                     "lat": convert_nmea_to_decimal(groups[1], groups[2]),
                     "lon": convert_nmea_to_decimal(groups[3], groups[4]),
-                    "h": float(groups[8]) + float(groups[10])
+                    "h": float(groups[8]) + float(groups[9])
                 },
                 "nmea_ts": nmea_utc_ts,
                 "sys_ts": time.time(),
@@ -959,6 +959,7 @@ class MqttProcessor:
             time_in_cooldown_start = None
             cooldown_alert_level = 0
             cooldown_timeout = getattr(self.config, 'cooldown_watchdog_timeout_sec', 900) # 15 phút mặc định
+            last_heartbeat_time = time.time()
 
             while True:
                 try:
