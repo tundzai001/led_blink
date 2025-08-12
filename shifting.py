@@ -189,7 +189,7 @@ class ParticleFilterGNSS:
         if not np.all(np.isfinite(distances)):
             logger.error("Non-finite values detected in particle distances. Re-initializing weights.")
             self.weights.fill(1.0 / self.N)
-            return
+            return True
 
         likelihood = norm.pdf(distances, 0, measurement_noise)
         self.weights = likelihood + 1e-300 # Thêm một số rất nhỏ để tránh tất cả đều bằng 0
@@ -200,7 +200,8 @@ class ParticleFilterGNSS:
         else:
             self.weights.fill(1.0 / self.N)
             logger.warning("Particle weights collapsed, re-initializing weights.")
-
+            return False
+        return True
     def resample_if_needed(self):
         if 1. / np.sum(np.square(self.weights)) < self.N / 2:
             indices = np.random.choice(np.arange(self.N), size=self.N, replace=True, p=self.weights)
@@ -523,6 +524,13 @@ class MasterControlEngine:
 
             self.l2_particle_filter.predict(dt)
             effective_hdop = verified_point['hdop'] * (1 + 0.1 * max(0, abs(verified_point['sys_ts'] - verified_point['nmea_ts']) - self.constants.MAX_TIME_DRIFT_SECONDS))
+            update_successful = self.l2_particle_filter.update(raw_enu_point, effective_hdop)
+            
+            if not update_successful:
+                logger.critical("FILTER DIVERGENCE (Weight Collapse)! Resetting and starting INTELLIGENT COOLDOWN.")
+                self.l2_particle_filter.reset()
+                self.filter_in_cooldown = True
+                return None
             self.l2_particle_filter.update(raw_enu_point, effective_hdop)
             
             estimated_state, covariance = self.l2_particle_filter.estimate()
