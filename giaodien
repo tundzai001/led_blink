@@ -901,7 +901,7 @@ class AppGUI:
         
         # --- BƯỚC 1: KHAI BÁO TẤT CẢ CÁC BIẾN (StringVar, etc.) LÊN ĐẦU ---
         self.main_settings_window, self.chart_window, self.settings_window, self.classification_win = None, None, None, None
-        
+        self.adv_settings_tabs_created = set()
         # Biến cho cài đặt chung và MQTT
         self.broker_var, self.port_var, self.user_var, self.pass_var, self.pub_topic_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
         
@@ -1383,6 +1383,7 @@ class AppGUI:
         ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
     
     # Đặt hàm này bên trong lớp AppGUI của bạn
+
     def open_advanced_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.lift()
@@ -1392,69 +1393,75 @@ class AppGUI:
         self.settings_window.title("Cài đặt Nâng cao")
         self.settings_window.geometry("800x650")
 
-        # --- BƯỚC 1: TẠO CÁC KHUNG CHÍNH ---
-        # Khung chứa các nút bấm (giả làm tab)
-        button_bar_frame = ttk.Frame(self.settings_window, padding=(10, 10, 10, 0))
-        button_bar_frame.pack(side=tk.TOP, fill=tk.X)
+        # Xóa bộ nhớ đệm mỗi khi mở lại cửa sổ để đảm bảo lazy loading luôn hoạt động
+        self.adv_settings_tabs_created.clear()
 
-        # Khung chứa nội dung của các tab
-        content_frame = ttk.Frame(self.settings_window)
-        content_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        # Cấu hình để các frame con có thể lấp đầy không gian
-        content_frame.grid_rowconfigure(0, weight=1)
-        content_frame.grid_columnconfigure(0, weight=1)
+        # Khung chính chứa các nút Lưu/Đóng
+        main_frame = ttk.Frame(self.settings_window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
 
-        # Khung cho các nút Lưu/Đóng ở dưới cùng
-        bottom_button_frame = ttk.Frame(self.settings_window, padding=(10, 10, 10, 10))
-        bottom_button_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        # --- BƯỚC 1: TẠO NOTEBOOK ---
+        notebook = ttk.Notebook(main_frame)
+        notebook.grid(row=0, column=0, sticky="nsew")
 
-        # --- BƯỚC 2: TẠO CÁC FRAME NỘI DUNG VÀ LƯU TRỮ CHÚNG ---
-        self.adv_setting_frames = {} # Dictionary để quản lý các frame
+        # --- BƯỚC 2: TẠO CÁC FRAME TRỐNG CHO MỖI TAB ---
+        # Chúng ta cần tạo frame trước để thêm vào notebook, nhưng chưa có nội dung
+        tab_names = ["Cảnh báo Mực nước", "GNSS", "Chung & Âm thanh"]
+        self.adv_settings_tab_frames = {} # Dictionary để lưu tham chiếu đến các frame
 
-        for name in ["Cảnh báo Mực nước", "GNSS", "Chung & Âm thanh"]:
-            frame = ttk.Frame(content_frame, padding="10")
-            self.adv_setting_frames[name] = frame
-            # Đặt tất cả frame vào cùng một vị trí, chúng ta sẽ quản lý việc hiển thị sau
-            frame.grid(row=0, column=0, sticky="nsew")
+        for name in tab_names:
+            frame = ttk.Frame(notebook, padding=10)
+            notebook.add(frame, text=name)
+            self.adv_settings_tab_frames[name] = frame
 
-        # --- BƯỚC 3: HÀM ĐỂ CHUYỂN ĐỔI GIỮA CÁC FRAME (TAB) ---
-        self.adv_setting_buttons = {}
-        def show_frame(name):
-            # 1. Ẩn tất cả các frame
-            for frame in self.adv_setting_frames.values():
-                frame.grid_remove()
-            
-            # 2. Hiển thị frame được chọn
-            frame_to_show = self.adv_setting_frames[name]
-            frame_to_show.grid()
-            
-            # 3. Cập nhật giao diện nút bấm để người dùng biết tab nào đang hoạt động
-            for btn_name, button in self.adv_setting_buttons.items():
-                if btn_name == name:
-                    button.config(bootstyle="primary") # Kiểu của tab đang được chọn
-                else:
-                    button.config(bootstyle="secondary-outline") # Kiểu của các tab khác
+        # --- BƯỚC 3: HÀM TẠO NỘI DUNG KHI CHUYỂN TAB ---
+        def on_tab_changed(event):
+            # Lấy tên của tab vừa được chọn
+            selected_tab_name = notebook.tab(notebook.select(), "text")
 
-        # --- BƯỚC 4: TẠO CÁC NÚT BẤM (GIẢ LÀM TAB) ---
-        for name in ["Cảnh báo Mực nước", "GNSS", "Chung & Âm thanh"]:
-            # Sử dụng lambda để truyền đúng tên cho hàm show_frame
-            button = ttk.Button(button_bar_frame, text=name, bootstyle="secondary-outline",
-                                command=lambda n=name: show_frame(n))
-            button.pack(side=tk.LEFT, padx=(0, 5))
-            self.adv_setting_buttons[name] = button
+            # Nếu nội dung của tab này CHƯA được tạo, thì mới tạo
+            if selected_tab_name not in self.adv_settings_tabs_created:
+                parent_frame = self.adv_settings_tab_frames[selected_tab_name]
 
-        # --- BƯỚC 5: ĐẶT NỘI DUNG VÀO TỪNG FRAME TƯƠNG ỨNG ---
+                # Gọi hàm tương ứng để vẽ nội dung
+                if selected_tab_name == "Cảnh báo Mực nước":
+                    self._create_water_settings_content(parent_frame)
+                elif selected_tab_name == "GNSS":
+                    self._create_gnss_settings_content(parent_frame)
+                elif selected_tab_name == "Chung & Âm thanh":
+                    self._create_general_audio_settings_content(parent_frame)
 
-        # --- Nội dung cho frame "Cảnh báo Mực nước" ---
-        frame_water = self.adv_setting_frames["Cảnh báo Mực nước"]
-        threshold_frame = ttk.LabelFrame(frame_water, text="Ngưỡng cảnh báo theo MỨC NƯỚC (Giá trị tuyệt đối - đơn vị mét)", padding=10)
+                # Đánh dấu là đã tạo xong để lần sau không tạo lại
+                self.adv_settings_tabs_created.add(selected_tab_name)
+
+        # --- BƯỚC 4: GẮN SỰ KIỆN VÀ KHỞI TẠO TAB ĐẦU TIÊN ---
+        notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+
+        # Sự kiện trên chỉ chạy khi tab THAY ĐỔI. Ta cần tự gọi 1 lần
+        # để nội dung của tab đầu tiên (mặc định) được hiển thị.
+        on_tab_changed(None)
+
+        # --- BƯỚC 5: CÁC NÚT LƯU/ĐÓNG ---
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=1, column=0, sticky="e", pady=(10, 0))
+
+        ttk.Button(button_frame, text="Đóng", command=self.settings_window.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)#
+
+
+    def _create_water_settings_content(self, parent_frame):
+        """Tạo nội dung cho tab Cảnh báo Mực nước."""
+        threshold_frame = ttk.LabelFrame(parent_frame, text="Ngưỡng cảnh báo theo MỨC NƯỚC (Giá trị tuyệt đối - đơn vị mét)", padding=10)
         threshold_frame.pack(fill=tk.X, pady=10)
         threshold_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(threshold_frame, text="Ngưỡng Cảnh Báo (m):").grid(row=0, column=0, sticky="w", pady=5, padx=5)
         ttk.Entry(threshold_frame, textvariable=self.warning_threshold_var).grid(row=0, column=1, sticky="ew", pady=5, padx=5)
         ttk.Label(threshold_frame, text="Ngưỡng Nguy Hiểm (m):").grid(row=1, column=0, sticky="w", pady=5, padx=5)
         ttk.Entry(threshold_frame, textvariable=self.critical_threshold_var).grid(row=1, column=1, sticky="ew", pady=5, padx=5)
-        rate_threshold_frame = ttk.LabelFrame(frame_water, text="Ngưỡng cảnh báo theo TỐC ĐỘ DÂNG NƯỚC (Phân tích xu hướng)", padding=10)
+        
+        rate_threshold_frame = ttk.LabelFrame(parent_frame, text="Ngưỡng cảnh báo theo TỐC ĐỘ DÂNG NƯỚC (Phân tích xu hướng)", padding=10)
         rate_threshold_frame.pack(fill=tk.X, pady=10)
         rate_threshold_frame.grid_columnconfigure(1, weight=1)
         ttk.Label(rate_threshold_frame, text="Ngưỡng Theo dõi (mm/phút):").grid(row=0, column=0, sticky="w", pady=5, padx=5)
@@ -1464,10 +1471,10 @@ class AppGUI:
         ttk.Label(rate_threshold_frame, text="Ngưỡng Cấp tốc (mm/phút):").grid(row=2, column=0, sticky="w", pady=5, padx=5)
         ttk.Entry(rate_threshold_frame, textvariable=self.rate_critical_threshold_var).grid(row=2, column=1, sticky="ew", pady=5, padx=5)
 
-        # --- Nội dung cho frame "GNSS" ---
-        frame_gnss = self.adv_setting_frames["GNSS"]
-        ttk.Button(frame_gnss, text="Thiết lập Phân loại Tốc độ Dịch chuyển...", command=self.open_classification_window, bootstyle="info").pack(pady=(10, 10), fill=tk.X)
-        alert_logic_frame = ttk.LabelFrame(frame_gnss, text="Logic Khử nhiễu và Cảnh báo", padding=10)
+    def _create_gnss_settings_content(self, parent_frame):
+        """Tạo nội dung cho tab GNSS."""
+        ttk.Button(parent_frame, text="Thiết lập Phân loại Tốc độ Dịch chuyển...", command=self.open_classification_window, bootstyle="info").pack(pady=(10, 10), fill=tk.X)
+        alert_logic_frame = ttk.LabelFrame(parent_frame, text="Logic Khử nhiễu và Cảnh báo", padding=10)
         alert_logic_frame.pack(fill=tk.X, expand=True, pady=10)
         alert_logic_frame.grid_columnconfigure(1, weight=1)
         def add_gnss_setting(parent, text, row, var):
@@ -1478,27 +1485,21 @@ class AppGUI:
         add_gnss_setting(alert_logic_frame, "Số lần đọc an toàn để tắt cảnh báo:", 2, self.gnss_safe_streak_var)
         add_gnss_setting(alert_logic_frame, "Thời gian chờ tín hiệu kém (giây):", 3, self.gnss_degraded_timeout_var)
 
-        # --- Nội dung cho frame "Chung & Âm thanh" ---
-        frame_general = self.adv_setting_frames["Chung & Âm thanh"]
-        sounds_path_frame = ttk.LabelFrame(frame_general, text="Đường dẫn", padding=10); sounds_path_frame.pack(fill="x")
+    def _create_general_audio_settings_content(self, parent_frame):
+        """Tạo nội dung cho tab Chung & Âm thanh."""
+        sounds_path_frame = ttk.LabelFrame(parent_frame, text="Đường dẫn", padding=10); sounds_path_frame.pack(fill="x")
         sounds_path_frame.grid_columnconfigure(0, weight=1)
         ttk.Label(sounds_path_frame, text="Thư mục Âm thanh Cảnh báo:").grid(row=0, column=0, sticky="w", pady=5, padx=5)
         ttk.Entry(sounds_path_frame, textvariable=self.sounds_dir_var, state="readonly").grid(row=1, column=0, sticky="ew", pady=5, padx=5)
         ttk.Button(sounds_path_frame, text="Chọn Thư mục...", command=self.select_sounds_directory).grid(row=1, column=1, sticky="w", pady=5, padx=(5,0))
-        test_sound_frame = ttk.LabelFrame(frame_general, text="Kiểm tra Loa/Còi thủ công", padding=10); test_sound_frame.pack(fill="x", pady=(10, 0))
+        
+        test_sound_frame = ttk.LabelFrame(parent_frame, text="Kiểm tra Loa/Còi thủ công", padding=10); test_sound_frame.pack(fill="x", pady=(10, 0))
         test_sound_frame.grid_columnconfigure(0, weight=1)
         ttk.Label(test_sound_frame, text="File âm thanh kiểm tra:").grid(row=0, column=0, columnspan=3, sticky="w", padx=5)
         ttk.Entry(test_sound_frame, textvariable=self.test_sound_path_var, state="readonly").grid(row=1, column=0, sticky="ew", pady=5, padx=5)
         ttk.Button(test_sound_frame, text="Chọn File...", command=self.select_test_sound_file).grid(row=1, column=1, sticky="w", pady=5, padx=(0,5))
         ttk.Button(test_sound_frame, text="Phát Âm thanh", command=self.play_test_sound, bootstyle="success").grid(row=1, column=2, sticky="w", pady=5, padx=5)
-
-        # --- BƯỚC 6: ĐẶT CÁC NÚT LƯU/ĐÓNG VÀO KHUNG DƯỚI CÙNG ---
-        ttk.Button(bottom_button_frame, text="Đóng", command=self.settings_window.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
-        ttk.Button(bottom_button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
-
-        # --- BƯỚC 7: HIỂN THỊ TAB MẶC ĐỊNH KHI MỞ CỬA SỔ ---
-        show_frame("Cảnh báo Mực nước")
-    
+        
     def select_sounds_directory(self):
         directory = filedialog.askdirectory(title="Chọn Thư mục Âm thanh", parent=self.settings_window)
         if directory: self.sounds_dir_var.set(directory)
