@@ -311,16 +311,25 @@ class Backend:
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311)
         self.client.on_connect = self.on_connect; self.client.on_disconnect = self.on_disconnect; self.client.on_message = self.on_message
         
-        # THAY THẾ QUẢN LÝ TIẾN TRÌNH
-        self.processes = {} # Dùng dictionary: {'water': proc_obj, 'shifting': proc_obj}
-        self.alert_manager = AlertManager(self)
+        self.processes = {}
         self.gnss_speed_classification = []
+
+        # Khai báo các thuộc tính GNSS mới với giá trị mặc định
         self.gnss_max_hdop = Constants.DEFAULT_GNSS_MAX_HDOP
         self.gnss_confirm_steps = Constants.DEFAULT_GNSS_CONFIRM_STEPS
         self.gnss_safe_streak = Constants.DEFAULT_GNSS_SAFE_STREAK
         self.gnss_degraded_timeout = Constants.DEFAULT_GNSS_DEGRADED_TIMEOUT
         
-        self.load_config(); self.setup_audio_mixer(); self.setup_gpio(); atexit.register(self.cleanup_on_exit)
+        # --- BƯỚC QUAN TRỌNG: TẢI CẤU HÌNH LÊN TRƯỚC ---
+        self.load_config()
+
+        # --- SAU KHI TẢI CẤU HÌNH, MỚI TẠO CÁC ĐỐI TƯỢNG PHỤ THUỘC ---
+        self.alert_manager = AlertManager(self)
+        
+        # --- CÁC THIẾT LẬP CÒN LẠI ---
+        self.setup_audio_mixer()
+        self.setup_gpio()
+        atexit.register(self.cleanup_on_exit)
 
     def log_to_overview(self, source, message, status, timestamp=None):
         ts = timestamp if timestamp else time.time(); dt_object = datetime.fromtimestamp(ts)
