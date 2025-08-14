@@ -19,6 +19,21 @@ import configparser
 import psutil
 import threading
 
+class GNSSProcessingError(Exception):
+    """Base exception for GNSS processing errors"""
+    pass
+
+class DataValidationError(GNSSProcessingError):
+    """Raised when input data validation fails"""
+    pass
+
+class FilterConvergenceError(GNSSProcessingError):
+    """Raised when particle filter fails to converge"""
+    pass
+
+class ConfigurationError(GNSSProcessingError):
+    """Raised when configuration is invalid"""
+    pass
 # ======================================================================
 # LỚP 0: CẤU HÌNH, LOGGING VÀ CÁC TIỆN ÍCH
 # ======================================================================
@@ -98,6 +113,13 @@ class Constants:
         self.CONSTANT_ACCELERATION_THRESHOLD_M_PER_S2 = 1e-9
         self.JERK_ACCELERATION_THRESHOLD_M_PER_S2 = 1e-7
         self.ANALYSIS_WINDOW_FOR_FREQUENCY = 100
+        
+        self.TIME_WRAP_THRESHOLD_HOURS = 12
+        self.MAX_TIME_DRIFT_HOURS = 2
+        self.MIN_ORIGIN_CANDIDATES = 50
+        self.MEMORY_SAFETY_THRESHOLD_GB = 1.0
+        self.CPU_LOAD_THRESHOLD = 0.90
+        self.MAX_WAVELET_POINTS = 50000
 
 def wgs84_to_enu(lat, lon, h, lat_ref, lon_ref, h_ref):
     R = 6378137.0
@@ -106,15 +128,21 @@ def wgs84_to_enu(lat, lon, h, lat_ref, lon_ref, h_ref):
     lat_rad, lon_rad = map(math.radians, [lat, lon])
     lat_ref_rad, lon_ref_rad = map(math.radians, [lat_ref, lon_ref])
     
-    sqrt_arg_ref = 1 - e2 * math.sin(lat_ref_rad)**2
-    N_ref = R / math.sqrt(max(1e-12, sqrt_arg_ref))
+    sqrt_arg_ref = max(1e-12, 1 - e2 * math.sin(lat_ref_rad)**2)  # Đảm bảo > 0
+    if sqrt_arg_ref <= 0:
+        logger.error(f"Invalid sqrt argument in WGS84 conversion: {sqrt_arg_ref}")
+        sqrt_arg_ref = 1e-12
+    N_ref = R / math.sqrt(sqrt_arg_ref)
     
     x_ref = (h_ref + N_ref) * math.cos(lat_ref_rad) * math.cos(lon_ref_rad)
     y_ref = (h_ref + N_ref) * math.cos(lat_ref_rad) * math.sin(lon_ref_rad)
     z_ref = (h_ref + (1 - e2) * N_ref) * math.sin(lat_ref_rad)
     
-    sqrt_arg_curr = 1 - e2 * math.sin(lat_rad)**2
-    N_curr = R / math.sqrt(max(1e-12, sqrt_arg_curr))
+    sqrt_arg_curr = max(1e-12, 1 - e2 * math.sin(lat_rad)**2)
+    if sqrt_arg_curr <= 0:
+        logger.error(f"Invalid sqrt argument in WGS84 conversion: {sqrt_arg_curr}")
+        sqrt_arg_curr = 1e-12
+    N_curr = R / math.sqrt(sqrt_arg_curr)
     
     x_curr = (h + N_curr) * math.cos(lat_rad) * math.cos(lon_rad)
     y_curr = (h + N_curr) * math.cos(lat_rad) * math.sin(lon_rad)
@@ -161,7 +189,8 @@ def verify_checksum(sentence):
     try:
         sentence = sentence.strip()
         parts = sentence.split('*')
-        if not sentence.startswith('$') or len(parts) != 2: return False
+        if not sentence.startswith('$') or len(parts) != 2: 
+            return False
         
         main_part = parts[0][1:]
         checksum_part = parts[1]
@@ -171,9 +200,11 @@ def verify_checksum(sentence):
             return False
             
         calculated_checksum = 0
-        for char in main_part: calculated_checksum ^= ord(char)
+        for char in main_part: 
+            calculated_checksum ^= ord(char)
         return f"{calculated_checksum:02X}" == checksum_part.upper()
-    except Exception:
+    except (ValueError, IndexError, AttributeError) as e:
+        logger.debug(f"Checksum verification failed: {e}")
         return False
 
 class ParticleFilterGNSS:
@@ -323,7 +354,7 @@ class DataForensicsLab:
                     return None
             else:
                 diff_seconds = (candidate_dt - server_now_utc).total_seconds()
-                if diff_seconds > 12 * 3600: candidate_dt -= timedelta(days=1)
+                if diff_seconds > self.constants.TIME_WRAP_THRESHOLD_HOURS * 3600: candidate_dt -= timedelta(days=1)
                 elif diff_seconds < -12 * 3600: candidate_dt += timedelta(days=1)
                 nmea_utc_dt = candidate_dt
             
@@ -420,8 +451,6 @@ class MasterControlEngine:
         )
         self.origin = None
         
-        ### CẢI TIẾN 2.2: LỊCH SỬ DỮ LIỆU NHẬN BIẾT GIÁN ĐOẠN ###
-        # Giờ đây mỗi phần tử là một dict: {'ts':..., 'state':..., 'discontinuity': bool}
         self.long_term_history = deque(maxlen=self.constants.LONG_TERM_HISTORY_MAXLEN)
         
         self.processed_points_count = 0
@@ -452,6 +481,46 @@ class MasterControlEngine:
         if self.origin:
             logger.info(f"Successfully loaded a persistent origin point from state file.")
             self.signal_health_state = "STABLE"
+    
+        # Thêm vào đầu class MasterControlEngine
+    def safe_division(self, numerator, denominator, fallback=0.0, min_denominator=1e-12):
+        """
+        Thực hiện phép chia an toàn với protection chống division by zero
+        """
+        try:
+            if not np.isfinite(denominator) or abs(denominator) < min_denominator:
+                logger.debug(f"Safe division: denominator too small ({denominator}), using fallback")
+                return fallback
+            
+            result = numerator / denominator
+            
+            if not np.isfinite(result):
+                logger.debug(f"Safe division: result not finite ({result}), using fallback")
+                return fallback
+                
+            return result
+        except (ZeroDivisionError, OverflowError):
+            logger.debug(f"Safe division: mathematical error, using fallback")
+            return fallback
+
+    def safe_exp(self, x, fallback=0.0):
+        """
+        Thực hiện np.exp an toàn với protection chống overflow
+        """
+        try:
+            if not np.isfinite(x):
+                return fallback
+            
+            # Clamp x để tránh overflow
+            x_clamped = np.clip(x, -700, 700)  # exp(700) ≈ 10^304, gần giới hạn float64
+            result = np.exp(x_clamped)
+            
+            if not np.isfinite(result):
+                return fallback
+                
+            return result
+        except (OverflowError):
+            return fallback
     
     def _load_origin_state(self, path=os.path.join(LOG_DIRECTORY, "origin_state.json")):
         try:
@@ -782,6 +851,10 @@ class MasterControlEngine:
             return {}
         
         try:
+            available_gb = psutil.virtual_memory().available / (1024**3)
+            if available_gb < 1.0:  # Ít hơn 1GB
+                logger.warning(f"Low memory ({available_gb:.1f}GB). Skipping wavelet analysis.")
+                return {}
             load_1_min, _, _ = os.getloadavg()
             num_cores = os.cpu_count() or 1
             if (load_1_min / num_cores) > 0.90:
@@ -791,9 +864,6 @@ class MasterControlEngine:
             pass
 
         try:
-            ### CẢI TIẾN 2.2: TÌM CHUỖI DỮ LIỆU LIỀN MẠCH GẦN NHẤT ###
-            
-            # Tìm điểm đứt gãy cuối cùng
             last_discontinuity_idx = -1
             for i in range(len(self.long_term_history) - 1, -1, -1):
                 if self.long_term_history[i]['discontinuity']:
@@ -818,6 +888,12 @@ class MasterControlEngine:
             if avg_dt <= 1e-6: return {}
 
             proposed_num_points = int(total_duration / avg_dt)
+            MAX_SAFE_POINTS = 50000  # Giới hạn an toàn
+    
+            if proposed_num_points > MAX_SAFE_POINTS:
+                logger.warning(f"Capping wavelet points from {proposed_num_points} to {MAX_SAFE_POINTS}")
+                avg_dt = total_duration / MAX_SAFE_POINTS
+                proposed_num_points = MAX_SAFE_POINTS
             required_memory_bytes = 3 * proposed_num_points * 8
             available_memory_bytes = psutil.virtual_memory().available
 
@@ -912,28 +988,71 @@ class MasterControlEngine:
             mean_accel = 0.0
             std_accel = 0.0
 
-        safe_static_threshold = max(self.constants.STATIC_VELOCITY_THRESHOLD_M_PER_S, 1e-12)
-        score_static = np.exp(-mean_vel / safe_static_threshold)
-
-        safe_accel_threshold = max(self.constants.CONSTANT_ACCELERATION_THRESHOLD_M_PER_S2, 1e-12)
-        score_drift = (1 - score_static) * np.exp(-mean_accel / safe_accel_threshold)
+        # 🔧 SỬA: Defensive thresholds với validation
+        def safe_threshold(value, min_threshold=1e-12):
+            """Đảm bảo threshold luôn > 0 và hợp lý"""
+            if not np.isfinite(value) or value <= 0:
+                return min_threshold
+            return max(value, min_threshold)
         
+        # 🔧 SỬA: Sử dụng safe_threshold function
+        safe_static_threshold = safe_threshold(self.constants.STATIC_VELOCITY_THRESHOLD_M_PER_S)
+        safe_accel_threshold = safe_threshold(self.constants.CONSTANT_ACCELERATION_THRESHOLD_M_PER_S2)
+        safe_jerk_threshold = safe_threshold(self.constants.JERK_ACCELERATION_THRESHOLD_M_PER_S2)
+        
+        # 🔧 SỬA: Thêm validation cho input values
+        if not np.isfinite(mean_vel) or mean_vel < 0:
+            mean_vel = 0.0
+        if not np.isfinite(mean_accel) or mean_accel < 0:
+            mean_accel = 0.0
+        if not np.isfinite(std_accel) or std_accel < 0:
+            std_accel = 0.0
+        
+        # 🔧 SỬA: Safe calculations với try-catch
+        try:
+            score_static = np.exp(-mean_vel / safe_static_threshold)
+            score_drift = (1 - score_static) * np.exp(-mean_accel / safe_accel_threshold)
+            score_jerk = 1 - np.exp(-std_accel / safe_jerk_threshold)
+        except (ZeroDivisionError, OverflowError) as e:
+            logger.error(f"Mathematical error in MMAE analysis: {e}. Using fallback scores.")
+            # Fallback values
+            score_static = 1.0
+            score_drift = 0.0
+            score_jerk = 0.0
+
+        # Oscillation calculation cũng cần protection
         mean_vel_scalar = np.mean(vel_magnitudes)
+        if not np.isfinite(mean_vel_scalar):
+            mean_vel_scalar = 0.0
+            
         crossings = np.sum(np.diff(np.sign(vel_magnitudes - mean_vel_scalar)) != 0)
-        oscillation_metric = crossings / (len(vel_magnitudes) - 1) if len(vel_magnitudes) > 1 else 0
-        score_oscillation = 1 - np.exp(-oscillation_metric / 0.2)
-
-        safe_jerk_threshold = max(self.constants.JERK_ACCELERATION_THRESHOLD_M_PER_S2, 1e-12)
-        score_jerk = 1 - np.exp(-std_accel / safe_jerk_threshold)
-
-        scores = {"Static": score_static, "LinearDrift": score_drift, "Oscillation": score_oscillation, "Jerk": score_jerk}
+        denominator = max(1, len(vel_magnitudes) - 1)  # Đã có protection
+        oscillation_metric = crossings / denominator
         
+        # 🔧 SỬA: Safe oscillation score calculation
+        try:
+            score_oscillation = 1 - np.exp(-oscillation_metric / 0.2)
+            if not np.isfinite(score_oscillation) or score_oscillation < 0:
+                score_oscillation = 0.0
+        except (OverflowError):
+            score_oscillation = 0.0
+
+        scores = {
+            "Static": max(0.0, min(1.0, score_static)), 
+            "LinearDrift": max(0.0, min(1.0, score_drift)), 
+            "Oscillation": max(0.0, min(1.0, score_oscillation)), 
+            "Jerk": max(0.0, min(1.0, score_jerk))
+        }
+        
+        # 🔧 SỬA: Safe normalization
         total_score = sum(scores.values())
         if total_score > 1e-9:
             normalized_probs = {key: value / total_score for key, value in scores.items()}
         else:
+            # Fallback khi tất cả scores = 0
             normalized_probs = {"Static": 1.0, "LinearDrift": 0.0, "Oscillation": 0.0, "Jerk": 0.0}
-            
+            logger.warning("All MMAE scores were zero. Using Static fallback.")
+                
         logger.debug(f"MMA-Heuristic Probs: {normalized_probs}")
         return normalized_probs
 
@@ -997,6 +1116,7 @@ class MqttProcessor:
         self.rate_limit_tracker = {}
         self.last_reconnect_attempt = 0
         self.state_lock = threading.Lock()
+        self.watchdog_lock = threading.Lock()
 
     def on_connect(self, client, userdata, flags, rc, props=None):
         rc_val = getattr(rc, 'value', rc)
@@ -1018,8 +1138,8 @@ class MqttProcessor:
                 return
             
             self.rate_limit_tracker[source_id] = now
-            self.last_message_timestamp = now
-
+            with self.watchdog_lock:
+                self.last_message_timestamp = now
         try:
             self.message_queue.put(msg.payload.decode("utf-8"), block=False)
         except queue.Full:
@@ -1051,7 +1171,7 @@ class MqttProcessor:
                         print(json.dumps(report, ensure_ascii=False)); sys.stdout.flush()
 
                 except queue.Empty:
-                    with self.state_lock:
+                    with self.watchdog_lock:
                         time_since_last_msg = time.time() - self.last_message_timestamp
                     
                     if time_since_last_msg > self.config.fatal_watchdog_timeout_sec:
