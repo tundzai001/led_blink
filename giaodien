@@ -1382,16 +1382,35 @@ class AppGUI:
         ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
     
     def open_advanced_settings_window(self):
-        if self.settings_window and self.settings_window.winfo_exists(): self.settings_window.lift(); return
-        self.settings_window = Toplevel(self.root); self.settings_window.title("Cài đặt Nâng cao"); self.settings_window.geometry("800x650")
-        container = ttk.Frame(self.settings_window); container.pack(fill=tk.BOTH, expand=True)
-        notebook = ttk.Notebook(container); notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            return
         
-        general_frame = ttk.Frame(notebook, padding="10"); notebook.add(general_frame, text='Chung & Âm thanh')
-        gnss_frame = ttk.Frame(notebook, padding="10"); notebook.add(gnss_frame, text='GNSS')
-        water_level_frame = ttk.Frame(notebook, padding="10"); notebook.add(water_level_frame, text='Cảnh báo Mực nước')
+        self.settings_window = Toplevel(self.root)
+        self.settings_window.title("Cài đặt Nâng cao")
+        self.settings_window.geometry("800x650")
+        
+        # --- SỬA LỖI LAYOUT: TÁCH BIỆT NOTEBOOK VÀ KHUNG NÚT ---
+        
+        # 1. Tạo khung cho các nút trước và đặt nó ở dưới cùng
+        button_frame_adv = ttk.Frame(self.settings_window, padding=(0, 10, 10, 10))
+        button_frame_adv.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # --- Tab Chung & Âm thanh
+        # 2. Tạo Notebook và để nó lấp đầy toàn bộ không gian còn lại ở trên
+        notebook = ttk.Notebook(self.settings_window)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 0)) # pady dưới là 0
+        
+        # 3. Thêm các tab vào Notebook như bình thường
+        general_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(general_frame, text='Chung & Âm thanh')
+        
+        gnss_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(gnss_frame, text='GNSS')
+        
+        water_level_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(water_level_frame, text='Cảnh báo Mực nước')
+
+        # --- Tab Chung & Âm thanh ---
         sounds_path_frame = ttk.LabelFrame(general_frame, text="Đường dẫn", padding=10); sounds_path_frame.pack(fill="x")
         sounds_path_frame.grid_columnconfigure(0, weight=1)
         ttk.Label(sounds_path_frame, text="Thư mục Âm thanh Cảnh báo:").grid(row=0, column=0, sticky="w", pady=5, padx=5)
@@ -1417,7 +1436,7 @@ class AppGUI:
         add_gnss_setting(alert_logic_frame, "Số lần đọc an toàn để tắt cảnh báo:", 2, self.gnss_safe_streak_var)
         add_gnss_setting(alert_logic_frame, "Thời gian chờ tín hiệu kém (giây):", 3, self.gnss_degraded_timeout_var)
         
-        # --- Tab Cảnh báo Mực nước
+        # --- Tab Cảnh báo Mực nước ---
         threshold_frame = ttk.LabelFrame(water_level_frame, text="Ngưỡng cảnh báo theo MỨC NƯỚC (Giá trị tuyệt đối - đơn vị mét)", padding=10)
         threshold_frame.pack(fill=tk.X, pady=10)
         threshold_frame.grid_columnconfigure(1, weight=1)
@@ -1436,7 +1455,7 @@ class AppGUI:
         ttk.Label(rate_threshold_frame, text="Ngưỡng Cấp tốc (mm/phút):").grid(row=2, column=0, sticky="w", pady=5, padx=5)
         ttk.Entry(rate_threshold_frame, textvariable=self.rate_critical_threshold_var).grid(row=2, column=1, sticky="ew", pady=5, padx=5)
 
-        button_frame_adv = ttk.Frame(container, padding=(0, 10, 10, 10)); button_frame_adv.pack(side=tk.BOTTOM, fill=tk.X)
+        # 4. Đặt các nút vào khung nút đã tạo ở bước 1
         ttk.Button(button_frame_adv, text="Đóng", command=self.settings_window.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
         ttk.Button(button_frame_adv, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
 
