@@ -1,4 +1,4 @@
-# water_processor.py (Phiên bản cuối cùng, thông minh và độc lập)
+# water_processor.py (Phiên bản cuối cùng, tinh giản, mặc định đầu vào là mét)
 
 import json
 import time
@@ -21,15 +21,21 @@ LOG_DIRECTORY = "water_processor_logs"
 os.makedirs(LOG_DIRECTORY, exist_ok=True)
 logger = logging.getLogger("water_processor")
 logger.setLevel(logging.INFO)
-if logger.hasHandlers(): logger.handlers.clear()
-formatter = logging.Formatter('%(asctime)s - WATER-PROCESSOR - %(levelname)s - %(message)s')
-console_handler = logging.StreamHandler(sys.stdout)
-console_handler.setFormatter(formatter)
-logger.addHandler(console_handler)
-log_file_path = os.path.join(LOG_DIRECTORY, "water_processor.log")
-file_handler = TimedRotatingFileHandler(log_file_path, when='midnight', interval=1, backupCount=7, encoding='utf-8')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
+
+# Ngăn ghi log trùng lặp nếu file được import nhiều lần
+if not logger.handlers:
+    formatter = logging.Formatter('%(asctime)s - WATER-PROCESSOR - %(levelname)s - %(message)s')
+    
+    # Console Handler
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # File Handler
+    log_file_path = os.path.join(LOG_DIRECTORY, "water_processor.log")
+    file_handler = TimedRotatingFileHandler(log_file_path, when='midnight', interval=1, backupCount=7, encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 class FatalWatchdogError(Exception):
     """Lỗi nghiêm trọng khi watchdog bị kích hoạt."""
@@ -43,35 +49,39 @@ class DataEngine:
     def __init__(self, config):
         self.config = config
         self.history = deque(maxlen=self.config.history_size)
-        logger.info(f"Data Engine initialized. History size: {self.config.history_size} points.")
+        logger.info(f"Data Engine initialized. Assuming input unit is METERS. History size: {self.config.history_size} points.")
 
     def process_payload(self, payload_str):
         try:
             payload = json.loads(payload_str)
             timestamp = payload.get("timestamp", time.time())
-            value = payload.get("value")
+            value_in_meters = payload.get("value") # Dữ liệu vào đã là mét
 
-            if value is None:
-                logger.warning(f"Payload không chứa trường 'value': {payload_str}")
+            if value_in_meters is None:
+                logger.warning(f"Payload does not contain 'value' field: {payload_str}")
                 return None
-
-            value = float(value)
-
-            if not (self.config.valid_range_min <= value <= self.config.valid_range_max):
-                logger.warning(f"REJECTED: Giá trị {value:.2f}m nằm ngoài phạm vi hợp lệ ({self.config.valid_range_min}m - {self.config.valid_range_max}m).")
-                return None
-
-            if len(self.history) >= 5:
-                past_values = [item[1] for item in self.history]
-                mean = sum(past_values) / len(past_values)
-                std_dev = (sum([(x - mean) ** 2 for x in past_values]) / len(past_values)) ** 0.5
-                
-                if std_dev > 0.01 and abs(value - mean) > self.config.spike_threshold_std_dev * std_dev:
-                     logger.warning(f"REJECTED (SPIKE): Giá trị {value:.2f}m bị coi là nhiễu đột biến so với trung bình {mean:.2f}m.")
-                     return None
             
-            self.history.append((timestamp, value))
+            value_in_meters = float(value_in_meters)
 
+            # 1. Validation: Kiểm tra giá trị có nằm trong phạm vi hợp lệ không
+            if not (self.config.valid_range_min <= value_in_meters <= self.config.valid_range_max):
+                logger.warning(f"REJECTED: Value {value_in_meters:.4f}m is outside valid range ({self.config.valid_range_min}m - {self.config.valid_range_max}m).")
+                return None
+
+            # 2. Outlier Rejection: Lọc nhiễu đột biến
+            if len(self.history) >= 5:
+                past_values_m = [item[1] for item in self.history]
+                mean_m = sum(past_values_m) / len(past_values_m)
+                std_dev_m = (sum([(x - mean_m) ** 2 for x in past_values_m]) / len(past_values_m)) ** 0.5
+                
+                # Chỉ lọc khi có sự biến động nhất định để tránh lọc sai ở trạng thái ổn định
+                if std_dev_m > 0.01 and abs(value_in_meters - mean_m) > self.config.spike_threshold_std_dev * std_dev_m:
+                    logger.warning(f"REJECTED (SPIKE): Value {value_in_meters:.4f}m is considered a spike compared to recent mean of {mean_m:.4f}m.")
+                    return None
+            
+            self.history.append((timestamp, value_in_meters))
+
+            # 3. Trend Analysis: Phân tích xu hướng
             rate_of_change_mm_per_min = 0.0
             if len(self.history) >= self.config.trend_window_size:
                 trend_data = list(self.history)[-self.config.trend_window_size:]
@@ -79,27 +89,27 @@ class DataEngine:
                 delta_time_sec = end_point[0] - start_point[0]
                 delta_value_m = end_point[1] - start_point[1]
 
-                if delta_time_sec > 1:
+                if delta_time_sec > 1: # Tránh chia cho 0
                     rate_of_change_m_per_sec = delta_value_m / delta_time_sec
                     rate_of_change_mm_per_min = rate_of_change_m_per_sec * 1000 * 60
 
+            # 4. Create Report: Tạo báo cáo để gửi về led.py
             report = {
                 "type": "processed_water_report",
                 "timestamp": timestamp,
-                "processed_value": value,
+                "processed_value_meters": value_in_meters, # Luôn là mét
                 "analysis": {
-                    "rate_of_change_mm_per_min": round(rate_of_change_mm_per_min, 3),
-                    "history_points_analyzed": len(self.history)
+                    "rate_of_change_mm_per_min": round(rate_of_change_mm_per_min, 3)
                 },
                 "original_payload": payload
             }
             return report
 
         except (json.JSONDecodeError, ValueError, TypeError) as e:
-            logger.error(f"Lỗi khi xử lý payload: '{payload_str}'. Lỗi: {e}")
+            logger.error(f"Error processing payload: '{payload_str}'. Details: {e}")
             return None
         except Exception as e:
-            logger.critical(f"Lỗi không xác định trong DataEngine: {e}", exc_info=True)
+            logger.critical(f"Unexpected error in DataEngine: {e}", exc_info=True)
             return None
 
 # ======================================================================
@@ -147,7 +157,6 @@ class MqttProcessor:
                 try:
                     payload = self.message_queue.get(timeout=1.0)
                     report = self.engine.process_payload(payload)
-                    
                     if report:
                         print(json.dumps(report, ensure_ascii=False), flush=True)
 
@@ -156,26 +165,24 @@ class MqttProcessor:
                         time_since_last_msg = time.time() - self.last_message_timestamp
                     
                     if time_since_last_msg > self.config.fatal_watchdog_timeout_sec:
-                        raise FatalWatchdogError(f"Không nhận được message trong hơn {self.config.fatal_watchdog_timeout_sec} giây.")
+                        raise FatalWatchdogError(f"No message received for over {self.config.fatal_watchdog_timeout_sec} seconds.")
                     
                     if time_since_last_msg > self.config.watchdog_timeout_sec and (time.time() - self.last_reconnect_attempt > 60):
-                        logger.warning(f"WATCHDOG: Không có message trong {time_since_last_msg:.0f}s. Đang kết nối lại MQTT...")
+                        logger.warning(f"WATCHDOG: No message for {time_since_last_msg:.0f}s. Attempting to reconnect MQTT...")
                         try:
                             self.client.reconnect()
                         except Exception as e:
-                            logger.error(f"Kết nối lại MQTT thất bại: {e}")
+                            logger.error(f"MQTT reconnect failed: {e}")
                         self.last_reconnect_attempt = time.time()
         
-        except FatalWatchdogError as e:
-            logger.critical(f"FATAL WATCHDOG: {e}. Đang tắt tiến trình.")
-        except KeyboardInterrupt:
-            logger.info("Nhận tín hiệu dừng (Ctrl+C). Đang tắt tiến trình.")
+        except (FatalWatchdogError, KeyboardInterrupt) as e:
+            logger.info(f"Shutting down: {e}")
         except Exception as e:
-            logger.critical(f"Lỗi không xác định trong vòng lặp chính: {e}", exc_info=True)
+            logger.critical(f"Unhandled exception in main loop: {e}", exc_info=True)
         finally:
             self.client.loop_stop()
             self.client.disconnect()
-            logger.info("Dọn dẹp hoàn tất. Tiến trình đã thoát.")
+            logger.info("Cleanup complete. Process will now exit.")
 
 # ======================================================================
 # ĐIỂM KHỞI CHẠY CHÍNH
@@ -195,11 +202,11 @@ if __name__ == "__main__":
     config_file_path = os.path.join(base_dir, 'water_processor_config.ini')
     
     if not os.path.exists(config_file_path):
-        logger.critical(f"LỖI NGHIÊM TRỌNG: Không tìm thấy file cấu hình '{config_file_path}'. Vui lòng tạo file này. Đang thoát.")
+        logger.critical(f"FATAL: Configuration file '{config_file_path}' not found! Please create it. Exiting.")
         sys.exit(1)
     
     config_parser.read(config_file_path, encoding='utf-8')
-    logger.info(f"Đã tải cấu hình thành công từ '{config_file_path}'.")
+    logger.info(f"Successfully loaded configuration from '{config_file_path}'.")
 
     try:
         engine_config = config_parser['WaterEngine']
@@ -215,12 +222,12 @@ if __name__ == "__main__":
         args.fatal_watchdog_timeout_sec = watchdog_config.getint('fatal_watchdog_timeout_sec', 300)
 
     except (configparser.NoSectionError, KeyError, ValueError) as e:
-        logger.critical(f"LỖI NGHIÊM TRỌNG: Lỗi đọc file cấu hình '{config_file_path}': {e}. Đang thoát.")
+        logger.critical(f"FATAL: Error reading configuration file '{config_file_path}': {e}. Exiting.")
         sys.exit(1)
 
     try:
         processor = MqttProcessor(config=args, topics=args.topics)
         processor.run()
     except Exception as e:
-        logger.critical(f"Lỗi khi khởi tạo chương trình: {e}", exc_info=True)
+        logger.critical(f"An unexpected error occurred during program initialization: {e}", exc_info=True)
         sys.exit(1)
