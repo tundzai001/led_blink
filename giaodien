@@ -1164,9 +1164,7 @@ class AppGUI:
         last_row_index = self.sheet_water.get_total_rows() - 1
         if last_row_index >= 0:
             self.sheet_water.see(row=last_row_index)
-            
-            # --- SỬA LỖI Ở ĐÂY ---
-            # Trạng thái (status) nằm ở vị trí thứ 3 (index 3) của record gốc
+
             status = record[3] 
             
             bg = "#D4EDDA" # Màu an toàn (mặc định)
@@ -1188,6 +1186,21 @@ class AppGUI:
             elif "SAFE" in status: bg = "#D4EDDA"
             self.sheet_overview.highlight_rows([last_row_index], bg=bg)
             self.sheet_overview.deselect()
+    
+    def refresh_water_table_units(self):
+        """Xóa và vẽ lại toàn bộ dữ liệu trong bảng nước với đơn vị mới."""
+        all_data = list(self.backend.water_data)
+        
+        # Xóa toàn bộ dữ liệu hiện có trên bảng
+        self.sheet_water.set_sheet_data(data=[], redraw=False)
+
+        # Chèn lại từng dòng. Hàm update_water_tab sẽ tự động chuyển đổi đơn vị.
+        for record in all_data:
+            self.update_water_tab(record)
+        
+        # Yêu cầu bảng vẽ lại sau khi đã chèn xong
+        self.sheet_water.redraw()
+    
     def save_overview_to_csv(self): self._save_data_to_csv(list(self.backend.overview_log_data), ["Thời gian", "Nguồn", "Thông điệp", "Trạng thái"])
     def save_gnss_to_csv(self): self._save_data_to_csv(list(self.backend.gnss_analysis_data), ["Thời gian", "Trạng thái Ước tính", "Vận tốc 3D (mm/s)", "Độ Bất định (mm)", "Mô hình Chuyển động", "Đánh giá Hệ thống"])
     
