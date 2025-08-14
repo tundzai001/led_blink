@@ -814,17 +814,23 @@ class AppGUI:
     def __init__(self, root: tk.Toplevel, backend: Backend, on_close_callback):
         self.root = root; self.backend = backend; self.on_close_callback = on_close_callback
         self.root.title("Giao diện Giám sát Sạt lở & Cảnh báo Sớm"); self.root.geometry(f"{self.root.winfo_screenwidth()}x{self.root.winfo_screenheight()-70}+0+0")
+        
+        # --- BƯỚC 1: KHAI BÁO TẤT CẢ CÁC BIẾN (StringVar, etc.) LÊN ĐẦU ---
         self.main_settings_window, self.chart_window, self.settings_window, self.classification_win = None, None, None, None
+        
+        # Biến cho cài đặt chung và MQTT
         self.broker_var, self.port_var, self.user_var, self.pass_var, self.pub_topic_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
+        
+        # Biến cho cài đặt âm thanh và ngưỡng nước
         self.warning_threshold_var, self.critical_threshold_var, self.sounds_dir_var, self.test_sound_path_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
+        
+        # Biến cho tab GNSS
         self.gnss_belief_state_var = tk.StringVar(value="---"); self.gnss_motion_model_var = tk.StringVar(value="---")
         self.gnss_velocity_var = tk.StringVar(value="---"); self.gnss_uncertainty_var = tk.StringVar(value="---")
         self.qrf_trend_vel_var = tk.StringVar(value="---"); self.qrf_transients_var = tk.StringVar(value="---")
         self.belief_vars = {"Stable": tk.DoubleVar(value=0), "SlowCreep": tk.DoubleVar(value=0), "RapidFailure": tk.DoubleVar(value=0)}
-        self.some_warning_label = tk.Label(self.root, text="", font=("Helvetica", 10), fg="orange")
-        self.some_warning_label.pack(pady=5)
-        self.create_widgets(); self.load_initial_data_to_vars(); self.root.after(250, self.periodic_update)
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close_window); self.root.app_instance = self
+        
+        # Biến cho các cài đặt nâng cao mới
         self.current_water_unit = tk.StringVar(value="m")
         self.rate_watch_threshold_var = tk.StringVar()
         self.rate_escalated_threshold_var = tk.StringVar()
@@ -833,7 +839,20 @@ class AppGUI:
         self.gnss_confirm_steps_var = tk.StringVar()
         self.gnss_safe_streak_var = tk.StringVar()
         self.gnss_degraded_timeout_var = tk.StringVar()
+
+        # Tạo tham chiếu để backend truy cập GUI
         self.backend.gui_instance = self
+        self.root.app_instance = self
+
+        # Cảnh báo phụ (nếu cần)
+        self.some_warning_label = tk.Label(self.root, text="", font=("Helvetica", 10), fg="orange")
+        self.some_warning_label.pack(pady=5)
+        
+        # --- BƯỚC 2: SAU KHI CÓ BIẾN, MỚI TẠO WIDGET VÀ TẢI DỮ LIỆU ---
+        self.create_widgets()
+        self.load_initial_data_to_vars()
+        self.root.after(250, self.periodic_update)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
     def create_widgets(self):
         main = ttk.Frame(self.root, padding=10); main.pack(fill="both", expand=True)
         main.grid_columnconfigure(1, weight=1); main.grid_columnconfigure(0, weight=0, minsize=300); main.grid_rowconfigure(0, weight=1)
