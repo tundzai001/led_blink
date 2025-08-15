@@ -1155,7 +1155,7 @@ class AppGUI:
             self.sheet_overview.column_width(column=i, width=w)
 
         for col_index in [0, 1, 3]:
-            self.sheet_overview.column(col_index, align="center")
+            self.sheet_overview.align_columns(columns=[col_index], align="center")
         
         ttk.Button(parent_tab, text="Lưu Nhật ký Tổng quan (CSV)", command=self.save_overview_to_csv, bootstyle="info-outline").grid(row=1, column=0, sticky='e', pady=5)
 
@@ -1285,84 +1285,84 @@ class AppGUI:
                 try: win.destroy()
                 except tk.TclError: pass
                 
-    def open_main_settings_window(self):
-        if self.main_settings_window and self.main_settings_window.winfo_exists():
-            self.main_settings_window.lift()
-            return
-            
-        self.main_settings_window = Toplevel(self.root)
-        self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
+def open_main_settings_window(self):
+    if self.main_settings_window and self.main_settings_window.winfo_exists():
+        self.main_settings_window.lift()
+        return
         
-        # Cho phép cửa sổ thay đổi kích thước và đặt kích thước tối thiểu
-        self.main_settings_window.resizable(True, True)
-        self.main_settings_window.minsize(width=450, height=500)
-        
-        self.main_settings_window.transient(self.root)
-        self.main_settings_window.grab_set()
+    self.main_settings_window = Toplevel(self.root)
+    self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
+    
+    # Cho phép cửa sổ thay đổi kích thước và đặt kích thước tối thiểu
+    self.main_settings_window.resizable(True, True)
+    self.main_settings_window.minsize(width=450, height=500)
+    
+    self.main_settings_window.transient(self.root)
+    self.main_settings_window.grab_set()
 
-        container = ttk.Frame(self.main_settings_window)
-        container.pack(fill=tk.BOTH, expand=True)
-        
-        # --- BƯỚC 1: CHUYỂN SANG DÙNG GRID CHO CONTENT_FRAME ---
-        content_frame = ttk.Frame(container, padding=15)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-        
-        # Cấu hình grid: Hàng 1 (topics) sẽ co giãn, cột 0 sẽ co giãn
-        content_frame.grid_rowconfigure(1, weight=1)
-        content_frame.grid_columnconfigure(0, weight=1)
+    container = ttk.Frame(self.main_settings_window)
+    container.pack(fill=tk.BOTH, expand=True)
+    
+    # --- BƯỚC 1: CHUYỂN SANG DÙNG GRID CHO CONTENT_FRAME ---
+    content_frame = ttk.Frame(container, padding=15)
+    content_frame.pack(fill=tk.BOTH, expand=True)
+    
+    # Cấu hình grid: Hàng 1 (topics) sẽ co giãn, cột 0 sẽ co giãn
+    content_frame.grid_rowconfigure(1, weight=1)
+    content_frame.grid_columnconfigure(0, weight=1)
 
-        # --- CÁC WIDGET BÊN TRONG GIỮ NGUYÊN ---
-        def add_labeled_entry(frame, label, row, textvariable, show=None):
-            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=4, padx=5)
-            entry = ttk.Entry(frame, textvariable=textvariable, show=show)
-            entry.grid(row=row, column=1, sticky="ew", pady=4, padx=5)
-            return entry
+    # --- CÁC WIDGET BÊN TRONG GIỮ NGUYÊN ---
+    def add_labeled_entry(frame, label, row, textvariable, show=None):
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=4, padx=5)
+        entry = ttk.Entry(frame, textvariable=textvariable, show=show)
+        entry.grid(row=row, column=1, sticky="ew", pady=4, padx=5)
+        return entry
 
-        mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
-        mqtt_frame.grid_columnconfigure(1, weight=1)
-        
-        add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
-        add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
-        add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
-        pass_entry = add_labeled_entry(mqtt_frame, "Password:", 3, self.pass_var, show="*")
-        ttk.Button(mqtt_frame, text="👁", command=lambda: pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*"), width=2, bootstyle="light").grid(row=3, column=2, sticky="w", padx=2)
-        add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
+    mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
+    mqtt_frame.grid_columnconfigure(1, weight=1)
+    
+    add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
+    add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
+    add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
+    pass_entry = add_labeled_entry(mqtt_frame, "Password:", 3, self.pass_var, show="*")
+    ttk.Button(mqtt_frame, text="👁", command=lambda: pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*"), width=2, bootstyle="light").grid(row=3, column=2, sticky="w", padx=2)
+    add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
 
-        topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
-        topics_frame.grid_rowconfigure(1, weight=1)
-        topics_frame.grid_rowconfigure(3, weight=1)
-        topics_frame.grid_columnconfigure(0, weight=1)
-        
-        ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
-        self.water_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-        self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=5)
-        self.water_topic_text.insert("1.0", "\n".join(self.backend.water_topics))
-        
-        ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w', pady=(10,0))
-        self.gnss_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-        self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=5)
-        self.gnss_topic_text.insert("1.0", "\n".join(self.backend.gnss_topics))
+    topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
+    topics_frame.grid_rowconfigure(1, weight=1)
+    topics_frame.grid_rowconfigure(3, weight=1)
+    topics_frame.grid_columnconfigure(0, weight=1)
+    
+    ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
+    self.water_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
+    self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=5)
+    self.water_topic_text.insert("1.0", "\n".join(self.backend.water_topics))
+    
+    ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w', pady=(10,0))
+    self.gnss_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
+    self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=5)
+    self.gnss_topic_text.insert("1.0", "\n".join(self.backend.gnss_topics))
 
-        button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
-        
-        # --- BƯỚC 2: ĐẶT CÁC KHUNG VÀO GRID CỦA CONTENT_FRAME ---
-        mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        topics_frame.grid(row=1, column=0, sticky="nsew") # nsew = co giãn 4 phía
-        button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0)) # s = dính đáy, ew = giãn ngang
+    button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
+    
+    # --- BƯỚC 2: ĐẶT CÁC KHUNG VÀO GRID CỦA CONTENT_FRAME ---
+    mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    topics_frame.grid(row=1, column=0, sticky="nsew") # nsew = co giãn 4 phía
+    button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0)) # s = dính đáy, ew = giãn ngang
 
-        # Cấu hình bên trong button_frame (dùng pack vẫn ổn)
-        def on_close():
-            self.is_updating_paused = False
-            self.main_settings_window.destroy()
-            self.main_settings_window = None
+    # Cấu hình bên trong button_frame (dùng pack vẫn ổn)
+    def on_close():
+        self.is_updating_paused = False
+        self.main_settings_window.destroy()
+        self.main_settings_window = None
 
-        ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
-        ttk.Button(button_frame, text="Lưu Cài đặt", 
-                command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), 
-                bootstyle="primary").pack(side=tk.RIGHT, padx=10)
-        
-        self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
-        self.root.wait_window(self.main_settings_window)
+    ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
+    ttk.Button(button_frame, text="Lưu Cài đặt", 
+              command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), 
+              bootstyle="primary").pack(side=tk.RIGHT, padx=10)
+    
+    self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
+    self.root.wait_window(self.main_settings_window)
 
     def open_advanced_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
