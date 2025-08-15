@@ -25,6 +25,11 @@ import atexit
 import subprocess
 import math
 import traceback
+print("--------------------------------------------------")
+print(f"TRÌNH THÔNG DỊCH PYTHON ĐANG CHẠY: {sys.executable}")
+print(f"PHIÊN BẢN TKSHEET ĐANG SỬ DỤNG: {tksheet.__version__}")
+print(f"ĐƯỜNG DẪN TKSHEET: {tksheet.__file__}")
+print("--------------------------------------------------")
 
 # --- THIẾT LẬP MÔI TRƯỜỜNG VÀ CẢNH BÁO ---
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "1"
