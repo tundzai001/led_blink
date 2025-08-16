@@ -443,8 +443,9 @@ class Backend:
         if self.gnss_topics:
             gnss_class_table_str = json.dumps(self.gnss_speed_classification)
             cmd_shifting = [
-                sys.executable, '-u', 'shifting.py', '--broker', self.broker, '--port', str(self.port),
-                '--classification-table', gnss_class_table_str
+                sys.executable, '-u', 'shifting.py', '--broker', self.broker, '--port', str(self.port), \
+                '--classification-table', gnss_class_table_str,
+                '--imu-topic', self.imu_topic
             ]
             if self.username: cmd_shifting.extend(['--username', self.username])
             if self.password: cmd_shifting.extend(['--password', self.password])
@@ -536,6 +537,7 @@ class Backend:
                 value_in_meters, rate_of_change, status,
                 datetime.fromtimestamp(report.get("timestamp", time.time())).strftime("%H:%M:%S %d-%m")
             )
+            self.gui_update_queue.put(("water_sensor", water_record_for_csv))
             self.water_data.append(water_record_for_csv)
 
             plot_point = (datetime.fromtimestamp(report.get("timestamp")), value_in_meters)
@@ -629,7 +631,9 @@ class Backend:
                 self.username = mqtt_cfg.get("username", ""); self.password = mqtt_cfg.get("password", "")
                 self.water_topics = [t.strip() for t in mqtt_cfg.get("water_sub_topic", "").splitlines() if t.strip()]
                 self.gnss_topics = [t.strip() for t in mqtt_cfg.get("gnss_sub_topic", "").splitlines() if t.strip()]
-                self.publish_topic = mqtt_cfg.get("publish", "")
+                self.publish_topic = mqtt_cfg.get("publish", "")    
+                self.imu_topic = mqtt_cfg.get("imu_sub_topic", "")
+
             if "Settings" in self.config:
                 settings_cfg = self.config["Settings"]
                 self.warning_threshold = settings_cfg.getfloat("warning_threshold", None)
@@ -676,6 +680,7 @@ class Backend:
                     'password': settings['password'],
                     'water_sub_topic': settings.get('water_topics', "\n".join(self.water_topics)), 
                     'gnss_sub_topic': settings.get('gnss_topics', "\n".join(self.gnss_topics)), 
+                    'imu_sub_topic': settings.get('imu_topic', self.imu_topic),
                     'publish': settings['publish']
                 }
 
@@ -1022,6 +1027,7 @@ class AppGUI:
     def _init_variables(self):
         """Khởi tạo tập trung tất cả các biến Tkinter."""
         self.broker_var, self.port_var, self.user_var, self.pass_var, self.pub_topic_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
+        self.imu_topic_var = tk.StringVar()
         self.warning_threshold_var, self.critical_threshold_var, self.sounds_dir_var, self.test_sound_path_var = tk.StringVar(), tk.StringVar(), tk.StringVar(), tk.StringVar()
         self.gnss_belief_state_var, self.gnss_motion_model_var, self.gnss_velocity_var, self.gnss_uncertainty_var, self.direction_var, self.qrf_trend_vel_var, self.qrf_transients_var = tk.StringVar(value="---"), tk.StringVar(value="---"), tk.StringVar(value="---"), tk.StringVar(value="---"), tk.StringVar(value="---"), tk.StringVar(value="---"), tk.StringVar(value="---")
         self.belief_vars = {"Stable": tk.DoubleVar(value=0), "SlowCreep": tk.DoubleVar(value=0), "RapidFailure": tk.DoubleVar(value=0)}
@@ -1203,8 +1209,19 @@ class AppGUI:
 
     def _batch_update_water_sheet(self, rows):
         if not hasattr(self, 'sheet_water'): return
-        cf = {'m': 1.0, 'cm': 100.0, 'mm': 1000.0}.get(self.current_water_unit.get(), 1.0)
-        display_rows = [[r[0], f"{r[1] * cf:.2f}", f"{r[2]:+.2f}", r[3], r[4]] for r in rows]
+    
+        unit = self.current_water_unit.get()
+        cf = {'m': 1.0, 'cm': 100.0, 'mm': 1000.0}.get(unit, 1.0)
+        display_rows = [
+            [
+                r[0], # Tên cảm biến
+                f"{r[1] * cf:.2f}", # Giá trị đã chuyển đổi và định dạng
+                format_speed_auto(r[2]), # Tốc độ đã định dạng
+                r[3], # Trạng thái
+                r[4]  # Thời gian
+            ] 
+            for r in rows
+        ]
         start_row = self.sheet_water.get_total_rows()
         self.sheet_water.insert_rows(rows=display_rows, redraw=False)
         for i, record in enumerate(rows):
@@ -1261,9 +1278,18 @@ class AppGUI:
         self.sheet_gnss.highlight_rows([row_index], bg=bg)
         
     def update_compass_needle(self, angle_deg):
-        w, h = 150, 150; angle_rad = math.radians(angle_deg)
-        end_x, end_y = w/2 + 60 * math.sin(angle_rad), h/2 - 60 * math.cos(angle_rad)
-        if hasattr(self, 'compass_needle'): self.compass_canvas.coords(self.compass_needle, w/2, h/2, end_x, end_y)
+        w, h = 150, 150
+        angle_rad = math.radians(angle_deg)
+        end_x = w/2 + 60 * math.sin(angle_rad)
+        end_y = h/2 - 60 * math.cos(angle_rad)
+        
+        if hasattr(self, 'compass_needle'):
+            self.compass_canvas.coords(self.compass_needle, w/2, h/2, end_x, end_y)
+        else:
+            self.compass_needle = self.compass_canvas.create_line(
+                w/2, h/2, end_x, end_y, 
+                arrow=tk.LAST, width=2, fill='red'
+            )
 
     def on_close_window(self):
         logger.info("Đã đóng cửa sổ giao diện. Gõ 'show' trong terminal để mở lại.")
@@ -1284,85 +1310,81 @@ class AppGUI:
             if win and win.winfo_exists():
                 try: win.destroy()
                 except tk.TclError: pass
-                
-def open_main_settings_window(self):
-    if self.main_settings_window and self.main_settings_window.winfo_exists():
-        self.main_settings_window.lift()
-        return
-        
-    self.main_settings_window = Toplevel(self.root)
-    self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
     
-    # Cho phép cửa sổ thay đổi kích thước và đặt kích thước tối thiểu
-    self.main_settings_window.resizable(True, True)
-    self.main_settings_window.minsize(width=450, height=500)
-    
-    self.main_settings_window.transient(self.root)
-    self.main_settings_window.grab_set()
-
-    container = ttk.Frame(self.main_settings_window)
-    container.pack(fill=tk.BOTH, expand=True)
-    
-    # --- BƯỚC 1: CHUYỂN SANG DÙNG GRID CHO CONTENT_FRAME ---
-    content_frame = ttk.Frame(container, padding=15)
-    content_frame.pack(fill=tk.BOTH, expand=True)
-    
-    # Cấu hình grid: Hàng 1 (topics) sẽ co giãn, cột 0 sẽ co giãn
-    content_frame.grid_rowconfigure(1, weight=1)
-    content_frame.grid_columnconfigure(0, weight=1)
-
-    # --- CÁC WIDGET BÊN TRONG GIỮ NGUYÊN ---
-    def add_labeled_entry(frame, label, row, textvariable, show=None):
+    def _add_labeled_entry(self, frame, label, row, textvariable, show=None):
         ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=4, padx=5)
         entry = ttk.Entry(frame, textvariable=textvariable, show=show)
         entry.grid(row=row, column=1, sticky="ew", pady=4, padx=5)
         return entry
 
-    mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
-    mqtt_frame.grid_columnconfigure(1, weight=1)
-    
-    add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
-    add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
-    add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
-    pass_entry = add_labeled_entry(mqtt_frame, "Password:", 3, self.pass_var, show="*")
-    ttk.Button(mqtt_frame, text="👁", command=lambda: pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*"), width=2, bootstyle="light").grid(row=3, column=2, sticky="w", padx=2)
-    add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
+    def open_main_settings_window(self):
+        if self.main_settings_window and self.main_settings_window.winfo_exists():
+            self.main_settings_window.lift()
+            return
+            
+        self.main_settings_window = Toplevel(self.root)
+        self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
+        self.main_settings_window.resizable(True, True)
+        self.main_settings_window.minsize(width=450, height=500)
+        self.main_settings_window.transient(self.root)
+        self.main_settings_window.grab_set()
 
-    topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
-    topics_frame.grid_rowconfigure(1, weight=1)
-    topics_frame.grid_rowconfigure(3, weight=1)
-    topics_frame.grid_columnconfigure(0, weight=1)
-    
-    ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
-    self.water_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-    self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=5)
-    self.water_topic_text.insert("1.0", "\n".join(self.backend.water_topics))
-    
-    ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w', pady=(10,0))
-    self.gnss_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-    self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=5)
-    self.gnss_topic_text.insert("1.0", "\n".join(self.backend.gnss_topics))
+        container = ttk.Frame(self.main_settings_window)
+        container.pack(fill=tk.BOTH, expand=True)
+        
+        content_frame = ttk.Frame(container, padding=15)
+        content_frame.pack(fill=tk.BOTH, expand=True)
+        content_frame.grid_rowconfigure(1, weight=1)
+        content_frame.grid_columnconfigure(0, weight=1)
 
-    button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
-    
-    # --- BƯỚC 2: ĐẶT CÁC KHUNG VÀO GRID CỦA CONTENT_FRAME ---
-    mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-    topics_frame.grid(row=1, column=0, sticky="nsew") # nsew = co giãn 4 phía
-    button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0)) # s = dính đáy, ew = giãn ngang
+        mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
+        mqtt_frame.grid_columnconfigure(1, weight=1)
+        
+        # Gọi phương thức helper mới
+        self._add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
+        self._add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
+        self._add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
+        pass_entry = self._add_labeled_entry(mqtt_frame, "Password:", 3, self.pass_var, show="*")
+        ttk.Button(mqtt_frame, text="👁", command=lambda: pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*"), width=2, bootstyle="light").grid(row=3, column=2, sticky="w", padx=2)
+        self._add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
 
-    # Cấu hình bên trong button_frame (dùng pack vẫn ổn)
-    def on_close():
-        self.is_updating_paused = False
-        self.main_settings_window.destroy()
-        self.main_settings_window = None
+        topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
+        topics_frame.grid_rowconfigure(1, weight=1)
+        topics_frame.grid_rowconfigure(3, weight=1)
+        topics_frame.grid_columnconfigure(0, weight=1)
+        
+        ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
+        self.water_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
+        self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=5)
+        self.water_topic_text.insert("1.0", "\n".join(self.backend.water_topics))
+        
+        ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w', pady=(10,0))
+        self.gnss_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
+        self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=5)
+        self.gnss_topic_text.insert("1.0", "\n".join(self.backend.gnss_topics))
+        
+        ttk.Label(topics_frame, text="IMU Sub Topic (chỉ một topic):").grid(row=4, column=0, sticky='w', pady=(10,0))
+        self.imu_topic_entry = ttk.Entry(topics_frame, textvariable=self.imu_topic_var)
+        self.imu_topic_entry.grid(row=5, column=0, sticky='ew', pady=5)
+        
+        button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
+        
+        mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        topics_frame.grid(row=1, column=0, sticky="nsew")
+        button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0))
 
-    ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
-    ttk.Button(button_frame, text="Lưu Cài đặt", 
-              command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), 
-              bootstyle="primary").pack(side=tk.RIGHT, padx=10)
-    
-    self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
-    self.root.wait_window(self.main_settings_window)
+        def on_close():
+            self.is_updating_paused = False
+            self.main_settings_window.destroy()
+            self.main_settings_window = None
+
+        ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
+        ttk.Button(button_frame, text="Lưu Cài đặt", 
+                command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), 
+                bootstyle="primary").pack(side=tk.RIGHT, padx=10)
+        
+        self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
+        self.root.wait_window(self.main_settings_window)
 
     def open_advanced_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
@@ -1606,6 +1628,7 @@ def open_main_settings_window(self):
     def load_initial_data_to_vars(self):
         self.backend.load_config()
         self.broker_var.set(self.backend.broker); self.port_var.set(str(self.backend.port)); self.user_var.set(self.backend.username); self.pass_var.set(self.backend.password); self.pub_topic_var.set(self.backend.publish_topic)
+        self.imu_topic_var.set(self.backend.imu_topic)
         self.warning_threshold_var.set(str(self.backend.warning_threshold) if self.backend.warning_threshold is not None else ""); self.critical_threshold_var.set(str(self.backend.critical_threshold) if self.backend.critical_threshold is not None else "")
         self.sounds_dir_var.set(self.backend.sounds_dir); self.test_sound_path_var.set(self.backend.test_sound_file_path)
         self.rate_watch_threshold_var.set(str(getattr(self.backend, 'rate_watch_threshold', Constants.DEFAULT_RATE_WATCH_THRESHOLD))); self.rate_escalated_threshold_var.set(str(getattr(self.backend, 'rate_escalated_threshold', Constants.DEFAULT_RATE_ESCALATED_THRESHOLD))); self.rate_critical_threshold_var.set(str(getattr(self.backend, 'rate_critical_threshold', Constants.DEFAULT_RATE_CRITICAL_THRESHOLD)))
@@ -1631,6 +1654,7 @@ def open_main_settings_window(self):
             if self.main_settings_window and self.main_settings_window.winfo_exists():
                 settings['water_topics'] = self.water_topic_text.get("1.0", "end-1c").strip()
                 settings['gnss_topics'] = self.gnss_topic_text.get("1.0", "end-1c").strip()
+                settings['imu_sub_topic'] = self.imu_topic_var.get().strip()
         if context in ["advanced", "all"]:
             settings.update({'warning_threshold': self.warning_threshold_var.get(), 'critical_threshold': self.critical_threshold_var.get(), 'sounds_dir': self.sounds_dir_var.get(), 'test_sound_path': self.test_sound_path_var.get(),
                              'rate_watch_threshold': self.rate_watch_threshold_var.get(), 'rate_escalated_threshold': self.rate_escalated_threshold_var.get(), 'rate_critical_threshold': self.rate_critical_threshold_var.get(),
