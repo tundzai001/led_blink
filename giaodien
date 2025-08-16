@@ -670,67 +670,67 @@ class Backend:
         if items_dict: self.gnss_speed_classification = [items_dict[i] for i in sorted(items_dict.keys())]
 
 
-def save_config(self, settings):
-    try:
-        # Lưu cài đặt MQTT nếu được cung cấp
-        if 'broker' in settings:
-            if 'MQTT' not in self.config:
-                self.config.add_section('MQTT')
+    def save_config(self, settings):
+        try:
+            # Lưu cài đặt MQTT nếu được cung cấp
+            if 'broker' in settings:
+                if 'MQTT' not in self.config:
+                    self.config.add_section('MQTT')
+                
+                # Cập nhật từng giá trị thay vì ghi đè toàn bộ section
+                # Điều này an toàn hơn và tránh mất các cấu hình khác
+                self.config.set('MQTT', 'broker', settings['broker'])
+                self.config.set('MQTT', 'port', settings['port'])
+                self.config.set('MQTT', 'username', settings['username'])
+                self.config.set('MQTT', 'password', settings['password'])
+                self.config.set('MQTT', 'publish', settings['publish'])
+                self.config.set('MQTT', 'water_sub_topic', settings.get('water_topics', "\n".join(self.water_topics)))
+                self.config.set('MQTT', 'gnss_sub_topic', settings.get('gnss_topics', "\n".join(self.gnss_topics)))
+                # === DÒNG SỬA LỖI CHÍNH ===
+                # Lấy trực tiếp giá trị 'imu_sub_topic' từ settings dictionary và gán vào config.
+                self.config.set('MQTT', 'imu_sub_topic', settings.get('imu_sub_topic', self.imu_topic))
+
+            # Lưu cài đặt nâng cao nếu được cung cấp
+            if 'warning_threshold' in settings:
+                if 'Settings' not in self.config: self.config.add_section('Settings')
+                self.config['Settings'] = {
+                    'warning_threshold': settings['warning_threshold'], 
+                    'critical_threshold': settings['critical_threshold'],
+                    'sounds_dir': settings['sounds_dir'], 
+                    'test_sound_path': settings['test_sound_path']
+                }
+
+            if 'rate_watch_threshold' in settings:
+                if 'WaterAlerting' not in self.config: self.config.add_section('WaterAlerting')
+                self.config['WaterAlerting'] = {
+                    'rate_watch_threshold_mm_per_min': settings['rate_watch_threshold'],
+                    'rate_escalated_threshold_mm_per_min': settings['rate_escalated_threshold'],
+                    'rate_critical_threshold_mm_per_min': settings['rate_critical_threshold']
+                }
+
+            if 'gnss_max_hdop' in settings:
+                if 'GnssAlerting' not in self.config: self.config.add_section('GnssAlerting')
+                self.config['GnssAlerting'] = {
+                    'max_reliable_hdop': settings['gnss_max_hdop'],
+                    'confirmation_steps': settings['gnss_confirm_steps'],
+                    'safe_streak_required': settings['gnss_safe_streak'],
+                    'degraded_timeout_seconds': settings['gnss_degraded_timeout']
+                }
+                
+                # Bảng phân loại chỉ được lưu khi lưu từ Cài đặt nâng cao
+                gnss_section = {}
+                for i, item in enumerate(self.gnss_speed_classification):
+                    for key, value in item.items(): gnss_section[f'item_{i}_{key}'] = str(value)
+                self.config['GNSS_Classification'] = gnss_section
+
+            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
+                self.config.write(f)
             
-            # Cập nhật từng giá trị thay vì ghi đè toàn bộ section
-            # Điều này an toàn hơn và tránh mất các cấu hình khác
-            self.config.set('MQTT', 'broker', settings['broker'])
-            self.config.set('MQTT', 'port', settings['port'])
-            self.config.set('MQTT', 'username', settings['username'])
-            self.config.set('MQTT', 'password', settings['password'])
-            self.config.set('MQTT', 'publish', settings['publish'])
-            self.config.set('MQTT', 'water_sub_topic', settings.get('water_topics', "\n".join(self.water_topics)))
-            self.config.set('MQTT', 'gnss_sub_topic', settings.get('gnss_topics', "\n".join(self.gnss_topics)))
-            # === DÒNG SỬA LỖI CHÍNH ===
-            # Lấy trực tiếp giá trị 'imu_sub_topic' từ settings dictionary và gán vào config.
-            self.config.set('MQTT', 'imu_sub_topic', settings.get('imu_sub_topic', self.imu_topic))
-
-        # Lưu cài đặt nâng cao nếu được cung cấp
-        if 'warning_threshold' in settings:
-            if 'Settings' not in self.config: self.config.add_section('Settings')
-            self.config['Settings'] = {
-                'warning_threshold': settings['warning_threshold'], 
-                'critical_threshold': settings['critical_threshold'],
-                'sounds_dir': settings['sounds_dir'], 
-                'test_sound_path': settings['test_sound_path']
-            }
-
-        if 'rate_watch_threshold' in settings:
-            if 'WaterAlerting' not in self.config: self.config.add_section('WaterAlerting')
-            self.config['WaterAlerting'] = {
-                'rate_watch_threshold_mm_per_min': settings['rate_watch_threshold'],
-                'rate_escalated_threshold_mm_per_min': settings['rate_escalated_threshold'],
-                'rate_critical_threshold_mm_per_min': settings['rate_critical_threshold']
-            }
-
-        if 'gnss_max_hdop' in settings:
-            if 'GnssAlerting' not in self.config: self.config.add_section('GnssAlerting')
-            self.config['GnssAlerting'] = {
-                'max_reliable_hdop': settings['gnss_max_hdop'],
-                'confirmation_steps': settings['gnss_confirm_steps'],
-                'safe_streak_required': settings['gnss_safe_streak'],
-                'degraded_timeout_seconds': settings['gnss_degraded_timeout']
-            }
-            
-            # Bảng phân loại chỉ được lưu khi lưu từ Cài đặt nâng cao
-            gnss_section = {}
-            for i, item in enumerate(self.gnss_speed_classification):
-                for key, value in item.items(): gnss_section[f'item_{i}_{key}'] = str(value)
-            self.config['GNSS_Classification'] = gnss_section
-
-        with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
-            self.config.write(f)
-        
-        logger.info(f"Đã lưu cấu hình vào {Constants.CONFIG_FILE}")
-        return True
-    except Exception as e:
-        logger.error(f"Lỗi lưu cấu hình: {e}")
-        return False
+            logger.info(f"Đã lưu cấu hình vào {Constants.CONFIG_FILE}")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi lưu cấu hình: {e}")
+            return False
     
     def cleanup_on_exit(self):
         if self.exiting: return
@@ -1323,7 +1323,7 @@ class AppGUI:
         entry = ttk.Entry(frame, textvariable=textvariable, show=show)
         entry.grid(row=row, column=1, sticky="ew", pady=4, padx=5)
         return entry
-
+    
     def open_main_settings_window(self):
         if self.main_settings_window and self.main_settings_window.winfo_exists():
             self.main_settings_window.lift()
@@ -1331,8 +1331,7 @@ class AppGUI:
             
         self.main_settings_window = Toplevel(self.root)
         self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
-        self.main_settings_window.resizable(True, True)
-        self.main_settings_window.minsize(width=450, height=500)
+        # Bỏ dòng resizable và minsize cũ để xử lý động
         self.main_settings_window.transient(self.root)
         self.main_settings_window.grab_set()
 
@@ -1340,14 +1339,15 @@ class AppGUI:
         container.pack(fill=tk.BOTH, expand=True)
         
         content_frame = ttk.Frame(container, padding=15)
-        content_frame.pack(fill=tk.BOTH, expand=True)
-        content_frame.grid_rowconfigure(1, weight=1)
+        # Sửa lại cách pack của content_frame để nó co giãn tốt hơn
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        content_frame.grid_rowconfigure(1, weight=1) # Hàng chứa các Text box sẽ co giãn
         content_frame.grid_columnconfigure(0, weight=1)
 
         mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
+        mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         mqtt_frame.grid_columnconfigure(1, weight=1)
         
-        # Gọi phương thức helper mới
         self._add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
         self._add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
         self._add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
@@ -1356,8 +1356,9 @@ class AppGUI:
         self._add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
 
         topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
-        topics_frame.grid_rowconfigure(1, weight=1)
-        topics_frame.grid_rowconfigure(3, weight=1)
+        topics_frame.grid(row=1, column=0, sticky="nsew") # Đảm bảo frame này co giãn
+        topics_frame.grid_rowconfigure(1, weight=1) # Text box nước co giãn
+        topics_frame.grid_rowconfigure(3, weight=1) # Text box GNSS co giãn
         topics_frame.grid_columnconfigure(0, weight=1)
         
         ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
@@ -1375,9 +1376,6 @@ class AppGUI:
         self.imu_topic_entry.grid(row=5, column=0, sticky='ew', pady=5)
         
         button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
-        
-        mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        topics_frame.grid(row=1, column=0, sticky="nsew")
         button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0))
 
         def on_close():
@@ -1391,21 +1389,60 @@ class AppGUI:
                 bootstyle="primary").pack(side=tk.RIGHT, padx=10)
         
         self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
+
+        # --- PHẦN CODE MỚI ĐỂ TỰ ĐỘNG FIT VÀ CĂN GIỮA ---
+        self.main_settings_window.update_idletasks() # Cập nhật để tính toán kích thước widget
+        
+        # Lấy kích thước tối thiểu cần thiết để hiển thị toàn bộ nội dung
+        min_width = self.main_settings_window.winfo_reqwidth()
+        min_height = self.main_settings_window.winfo_reqheight()
+        
+        # Lấy kích thước màn hình
+        screen_width = self.main_settings_window.winfo_screenwidth()
+        screen_height = self.main_settings_window.winfo_screenheight()
+        
+        # Đảm bảo cửa sổ không lớn hơn màn hình
+        width = min(min_width + 50, screen_width - 50) # Thêm chút padding
+        height = min(min_height + 50, screen_height - 100)
+        
+        # Tính toán vị trí để căn giữa
+        x_pos = (screen_width // 2) - (width // 2)
+        y_pos = (screen_height // 2) - (height // 2)
+        
+        self.main_settings_window.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
+        self.main_settings_window.minsize(min_width, min_height) # Đặt kích thước tối thiểu để không bị co quá nhỏ
+        self.main_settings_window.resizable(True, True) # Cho phép co giãn
+        
         self.root.wait_window(self.main_settings_window)
+
+    # Dán đoạn mã này vào lớp AppGUI, thay thế hoàn toàn cho hàm open_advanced_settings_window cũ.
 
     def open_advanced_settings_window(self):
         if self.settings_window and self.settings_window.winfo_exists():
             self.settings_window.lift(); return
-        self.settings_window = Toplevel(self.root); self.settings_window.title("Cài đặt Nâng cao"); self.settings_window.geometry("800x650")
+            
+        self.settings_window = Toplevel(self.root)
+        self.settings_window.title("Cài đặt Nâng cao")
+        # Bỏ geometry cũ
         self.settings_window.transient(self.root)
         self.settings_window.grab_set()
+        
         self.adv_settings_tabs_created = set()
-        main_frame = ttk.Frame(self.settings_window); main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        main_frame.grid_rowconfigure(0, weight=1); main_frame.grid_columnconfigure(0, weight=1)
-        notebook = ttk.Notebook(main_frame); notebook.grid(row=0, column=0, sticky="nsew")
-        tab_names = ["Cảnh báo Mực nước", "GNSS", "Chung & Âm thanh"]; self.adv_settings_tab_frames = {}
+        main_frame = ttk.Frame(self.settings_window)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        main_frame.grid_rowconfigure(0, weight=1)
+        main_frame.grid_columnconfigure(0, weight=1)
+        
+        notebook = ttk.Notebook(main_frame)
+        notebook.grid(row=0, column=0, sticky="nsew")
+        
+        tab_names = ["Cảnh báo Mực nước", "GNSS", "Chung & Âm thanh"]
+        self.adv_settings_tab_frames = {}
         for name in tab_names:
-            frame = ttk.Frame(notebook, padding=10); notebook.add(frame, text=name); self.adv_settings_tab_frames[name] = frame
+            frame = ttk.Frame(notebook, padding=10)
+            notebook.add(frame, text=name)
+            self.adv_settings_tab_frames[name] = frame
+            
         def on_tab_changed(event):
             selected_tab_name = notebook.tab(notebook.select(), "text")
             if selected_tab_name not in self.adv_settings_tabs_created:
@@ -1414,12 +1451,43 @@ class AppGUI:
                 elif selected_tab_name == "GNSS": self._create_gnss_settings_content(parent_frame)
                 elif selected_tab_name == "Chung & Âm thanh": self._create_general_audio_settings_content(parent_frame)
                 self.adv_settings_tabs_created.add(selected_tab_name)
-        notebook.bind("<<NotebookTabChanged>>", on_tab_changed); on_tab_changed(None)
-        button_frame = ttk.Frame(main_frame); button_frame.grid(row=1, column=0, sticky="e", pady=(10, 0))
-        def on_close(): self.is_updating_paused = False; self.settings_window.destroy(); self.settings_window = None
+                
+        notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+        # Tự động tạo nội dung cho tab đầu tiên
+        self.root.after(50, lambda: on_tab_changed(None))
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=1, column=0, sticky="e", pady=(10, 0))
+        
+        def on_close(): 
+            self.is_updating_paused = False
+            self.settings_window.destroy()
+            self.settings_window = None
+            
         ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
         ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
+        
         self.settings_window.protocol("WM_DELETE_WINDOW", on_close)
+
+        # --- PHẦN CODE MỚI ĐỂ TỰ ĐỘNG FIT VÀ CĂN GIỮA ---
+        self.settings_window.update_idletasks()
+
+        min_width = self.settings_window.winfo_reqwidth()
+        min_height = self.settings_window.winfo_reqheight()
+        
+        screen_width = self.settings_window.winfo_screenwidth()
+        screen_height = self.settings_window.winfo_screenheight()
+        
+        width = min(min_width + 100, screen_width - 50) # Cửa sổ này rộng hơn một chút
+        height = min(min_height + 50, screen_height - 100)
+        
+        x_pos = (screen_width // 2) - (width // 2)
+        y_pos = (screen_height // 2) - (height // 2)
+        
+        self.settings_window.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
+        self.settings_window.minsize(min_width, 550) # Giữ chiều cao tối thiểu hợp lý
+        self.settings_window.resizable(True, True)
+
         self.root.wait_window(self.settings_window)
     
     # Các hàm còn lại được copy y nguyên, không thiếu
