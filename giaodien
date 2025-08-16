@@ -669,62 +669,69 @@ class Backend:
                     items_dict[item_index][attr_name] = value
         if items_dict: self.gnss_speed_classification = [items_dict[i] for i in sorted(items_dict.keys())]
 
-    def save_config(self, settings):
-        try:
-            # Lưu cài đặt MQTT nếu được cung cấp
-            if 'broker' in settings:
-                self.config['MQTT'] = {
-                    'broker': settings['broker'], 
-                    'port': settings['port'], 
-                    'username': settings['username'], 
-                    'password': settings['password'],
-                    'water_sub_topic': settings.get('water_topics', "\n".join(self.water_topics)), 
-                    'gnss_sub_topic': settings.get('gnss_topics', "\n".join(self.gnss_topics)), 
-                    'imu_sub_topic': settings.get('imu_topic', self.imu_topic),
-                    'publish': settings['publish']
-                }
 
-            # Lưu cài đặt nâng cao nếu được cung cấp
-            if 'warning_threshold' in settings:
-                self.config['Settings'] = {
-                    'warning_threshold': settings['warning_threshold'], 
-                    'critical_threshold': settings['critical_threshold'],
-                    'sounds_dir': settings['sounds_dir'], 
-                    'test_sound_path': settings['test_sound_path']
-                }
-
-            if 'rate_watch_threshold' in settings:
-                if 'WaterAlerting' not in self.config: self.config.add_section('WaterAlerting')
-                self.config['WaterAlerting'] = {
-                    'rate_watch_threshold_mm_per_min': settings['rate_watch_threshold'],
-                    'rate_escalated_threshold_mm_per_min': settings['rate_escalated_threshold'],
-                    'rate_critical_threshold_mm_per_min': settings['rate_critical_threshold']
-                }
-
-            if 'gnss_max_hdop' in settings:
-                if 'GnssAlerting' not in self.config: self.config.add_section('GnssAlerting')
-                self.config['GnssAlerting'] = {
-                    'max_reliable_hdop': settings['gnss_max_hdop'],
-                    'confirmation_steps': settings['gnss_confirm_steps'],
-                    'safe_streak_required': settings['gnss_safe_streak'],
-                    'degraded_timeout_seconds': settings['gnss_degraded_timeout']
-                }
-                
-                # Bảng phân loại chỉ được lưu khi lưu từ Cài đặt nâng cao
-                gnss_section = {}
-                for i, item in enumerate(self.gnss_speed_classification):
-                    for key, value in item.items(): gnss_section[f'item_{i}_{key}'] = str(value)
-                self.config['GNSS_Classification'] = gnss_section
-
-            with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                self.config.write(f)
+def save_config(self, settings):
+    try:
+        # Lưu cài đặt MQTT nếu được cung cấp
+        if 'broker' in settings:
+            if 'MQTT' not in self.config:
+                self.config.add_section('MQTT')
             
-            logger.info(f"Đã lưu cấu hình vào {Constants.CONFIG_FILE}")
-            return True
-        except Exception as e:
-            logger.error(f"Lỗi lưu cấu hình: {e}")
-            return False
+            # Cập nhật từng giá trị thay vì ghi đè toàn bộ section
+            # Điều này an toàn hơn và tránh mất các cấu hình khác
+            self.config.set('MQTT', 'broker', settings['broker'])
+            self.config.set('MQTT', 'port', settings['port'])
+            self.config.set('MQTT', 'username', settings['username'])
+            self.config.set('MQTT', 'password', settings['password'])
+            self.config.set('MQTT', 'publish', settings['publish'])
+            self.config.set('MQTT', 'water_sub_topic', settings.get('water_topics', "\n".join(self.water_topics)))
+            self.config.set('MQTT', 'gnss_sub_topic', settings.get('gnss_topics', "\n".join(self.gnss_topics)))
+            # === DÒNG SỬA LỖI CHÍNH ===
+            # Lấy trực tiếp giá trị 'imu_sub_topic' từ settings dictionary và gán vào config.
+            self.config.set('MQTT', 'imu_sub_topic', settings.get('imu_sub_topic', self.imu_topic))
 
+        # Lưu cài đặt nâng cao nếu được cung cấp
+        if 'warning_threshold' in settings:
+            if 'Settings' not in self.config: self.config.add_section('Settings')
+            self.config['Settings'] = {
+                'warning_threshold': settings['warning_threshold'], 
+                'critical_threshold': settings['critical_threshold'],
+                'sounds_dir': settings['sounds_dir'], 
+                'test_sound_path': settings['test_sound_path']
+            }
+
+        if 'rate_watch_threshold' in settings:
+            if 'WaterAlerting' not in self.config: self.config.add_section('WaterAlerting')
+            self.config['WaterAlerting'] = {
+                'rate_watch_threshold_mm_per_min': settings['rate_watch_threshold'],
+                'rate_escalated_threshold_mm_per_min': settings['rate_escalated_threshold'],
+                'rate_critical_threshold_mm_per_min': settings['rate_critical_threshold']
+            }
+
+        if 'gnss_max_hdop' in settings:
+            if 'GnssAlerting' not in self.config: self.config.add_section('GnssAlerting')
+            self.config['GnssAlerting'] = {
+                'max_reliable_hdop': settings['gnss_max_hdop'],
+                'confirmation_steps': settings['gnss_confirm_steps'],
+                'safe_streak_required': settings['gnss_safe_streak'],
+                'degraded_timeout_seconds': settings['gnss_degraded_timeout']
+            }
+            
+            # Bảng phân loại chỉ được lưu khi lưu từ Cài đặt nâng cao
+            gnss_section = {}
+            for i, item in enumerate(self.gnss_speed_classification):
+                for key, value in item.items(): gnss_section[f'item_{i}_{key}'] = str(value)
+            self.config['GNSS_Classification'] = gnss_section
+
+        with open(Constants.CONFIG_FILE, 'w', encoding='utf-8') as f:
+            self.config.write(f)
+        
+        logger.info(f"Đã lưu cấu hình vào {Constants.CONFIG_FILE}")
+        return True
+    except Exception as e:
+        logger.error(f"Lỗi lưu cấu hình: {e}")
+        return False
+    
     def cleanup_on_exit(self):
         if self.exiting: return
         logger.info("Bắt đầu quá trình dọn dẹp để thoát..."); self.exiting = True; self.stop_all_processors()
