@@ -1324,6 +1324,8 @@ class AppGUI:
         entry.grid(row=row, column=1, sticky="ew", pady=4, padx=5)
         return entry
     
+    # Dán đoạn mã này vào lớp AppGUI, thay thế hoàn toàn cho hàm open_main_settings_window cũ.
+
     def open_main_settings_window(self):
         if self.main_settings_window and self.main_settings_window.winfo_exists():
             self.main_settings_window.lift()
@@ -1331,23 +1333,20 @@ class AppGUI:
             
         self.main_settings_window = Toplevel(self.root)
         self.main_settings_window.title("Cài đặt Hệ thống & MQTT")
-        # Bỏ dòng resizable và minsize cũ để xử lý động
         self.main_settings_window.transient(self.root)
         self.main_settings_window.grab_set()
 
         container = ttk.Frame(self.main_settings_window)
-        container.pack(fill=tk.BOTH, expand=True)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        content_frame = ttk.Frame(container, padding=15)
-        # Sửa lại cách pack của content_frame để nó co giãn tốt hơn
-        content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        content_frame.grid_rowconfigure(1, weight=1) # Hàng chứa các Text box sẽ co giãn
-        content_frame.grid_columnconfigure(0, weight=1)
+        # Cấu hình layout chính: Hàng 1 (topics) sẽ co giãn, các hàng khác thì không.
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1) # <- Quan trọng
 
-        mqtt_frame = ttk.LabelFrame(content_frame, text="Cài đặt MQTT", padding=10)
-        mqtt_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        # --- Frame Cài đặt MQTT (Hàng 0) ---
+        mqtt_frame = ttk.LabelFrame(container, text="Cài đặt MQTT", padding=10)
+        mqtt_frame.grid(row=0, column=0, sticky="ew")
         mqtt_frame.grid_columnconfigure(1, weight=1)
-        
         self._add_labeled_entry(mqtt_frame, "MQTT Broker:", 0, self.broker_var)
         self._add_labeled_entry(mqtt_frame, "Port:", 1, self.port_var)
         self._add_labeled_entry(mqtt_frame, "Username:", 2, self.user_var)
@@ -1355,63 +1354,61 @@ class AppGUI:
         ttk.Button(mqtt_frame, text="👁", command=lambda: pass_entry.config(show="" if pass_entry.cget("show") == "*" else "*"), width=2, bootstyle="light").grid(row=3, column=2, sticky="w", padx=2)
         self._add_labeled_entry(mqtt_frame, "Publish Topic:", 4, self.pub_topic_var)
 
-        topics_frame = ttk.LabelFrame(content_frame, text="Topics Đăng ký (Subscribe)", padding=10)
-        topics_frame.grid(row=1, column=0, sticky="nsew") # Đảm bảo frame này co giãn
-        topics_frame.grid_rowconfigure(1, weight=1) # Text box nước co giãn
-        topics_frame.grid_rowconfigure(3, weight=1) # Text box GNSS co giãn
+        # --- Frame Topics (Hàng 1 - SẼ CO GIÃN) ---
+        topics_frame = ttk.LabelFrame(container, text="Topics Đăng ký (Subscribe)", padding=10)
+        topics_frame.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         topics_frame.grid_columnconfigure(0, weight=1)
+        topics_frame.grid_rowconfigure(1, weight=1) # Text box Water co giãn
+        topics_frame.grid_rowconfigure(3, weight=1) # Text box GNSS co giãn
         
         ttk.Label(topics_frame, text="Water Sub Topic (mỗi topic một dòng):").grid(row=0, column=0, sticky='w')
-        self.water_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-        self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=5)
+        self.water_topic_text = tk.Text(topics_frame, height=4, width=40, relief="solid", borderwidth=1)
+        self.water_topic_text.grid(row=1, column=0, sticky='nsew', pady=(0, 5))
         self.water_topic_text.insert("1.0", "\n".join(self.backend.water_topics))
         
-        ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w', pady=(10,0))
-        self.gnss_topic_text = tk.Text(topics_frame, height=4, width=35, relief="solid", borderwidth=1)
-        self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=5)
+        ttk.Label(topics_frame, text="GNSS Sub Topic (mỗi topic một dòng):").grid(row=2, column=0, sticky='w')
+        self.gnss_topic_text = tk.Text(topics_frame, height=4, width=40, relief="solid", borderwidth=1)
+        self.gnss_topic_text.grid(row=3, column=0, sticky='nsew', pady=(0, 5))
         self.gnss_topic_text.insert("1.0", "\n".join(self.backend.gnss_topics))
         
-        ttk.Label(topics_frame, text="IMU Sub Topic (chỉ một topic):").grid(row=4, column=0, sticky='w', pady=(10,0))
+        ttk.Label(topics_frame, text="IMU Sub Topic (chỉ một topic):").grid(row=4, column=0, sticky='w')
         self.imu_topic_entry = ttk.Entry(topics_frame, textvariable=self.imu_topic_var)
-        self.imu_topic_entry.grid(row=5, column=0, sticky='ew', pady=5)
+        self.imu_topic_entry.grid(row=5, column=0, sticky='ew')
         
-        button_frame = ttk.Frame(content_frame, padding=(0, 10, 0, 0))
-        button_frame.grid(row=2, column=0, sticky="sew", pady=(10, 0))
-
+        # --- Frame Nút bấm (Hàng 2 - GỐC CỐ ĐỊNH) ---
+        button_frame = ttk.Frame(container)
+        button_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        
         def on_close():
             self.is_updating_paused = False
             self.main_settings_window.destroy()
             self.main_settings_window = None
 
+        ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), bootstyle="primary").pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
-        ttk.Button(button_frame, text="Lưu Cài đặt", 
-                command=lambda: self.save_settings_to_file(self.main_settings_window, 'mqtt'), 
-                bootstyle="primary").pack(side=tk.RIGHT, padx=10)
         
         self.main_settings_window.protocol("WM_DELETE_WINDOW", on_close)
 
-        # --- PHẦN CODE MỚI ĐỂ TỰ ĐỘNG FIT VÀ CĂN GIỮA ---
-        self.main_settings_window.update_idletasks() # Cập nhật để tính toán kích thước widget
-        
-        # Lấy kích thước tối thiểu cần thiết để hiển thị toàn bộ nội dung
-        min_width = self.main_settings_window.winfo_reqwidth()
-        min_height = self.main_settings_window.winfo_reqheight()
-        
-        # Lấy kích thước màn hình
-        screen_width = self.main_settings_window.winfo_screenwidth()
-        screen_height = self.main_settings_window.winfo_screenheight()
-        
-        # Đảm bảo cửa sổ không lớn hơn màn hình
-        width = min(min_width + 50, screen_width - 50) # Thêm chút padding
-        height = min(min_height + 50, screen_height - 100)
-        
-        # Tính toán vị trí để căn giữa
-        x_pos = (screen_width // 2) - (width // 2)
-        y_pos = (screen_height // 2) - (height // 2)
-        
-        self.main_settings_window.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
-        self.main_settings_window.minsize(min_width, min_height) # Đặt kích thước tối thiểu để không bị co quá nhỏ
-        self.main_settings_window.resizable(True, True) # Cho phép co giãn
+        # === PHẦN SỬA LỖI: ĐỂ CỬA SỔ TỰ FIT VÀ CĂN GIỮA ===
+        self.main_settings_window.resizable(True, True)
+        self.main_settings_window.update_idletasks() # Cho phép cửa sổ tự tính kích thước cần thiết
+
+        # Lấy kích thước cửa sổ chính để căn giữa
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_w = self.root.winfo_width()
+        main_h = self.root.winfo_height()
+
+        # Lấy kích thước tự nhiên của cửa sổ popup
+        popup_w = self.main_settings_window.winfo_width()
+        popup_h = self.main_settings_window.winfo_height()
+
+        # Tính toán vị trí để căn giữa so với cửa sổ chính
+        x_pos = main_x + (main_w // 2) - (popup_w // 2)
+        y_pos = main_y + (main_h // 2) - (popup_h // 2)
+
+        self.main_settings_window.geometry(f"+{x_pos}+{y_pos}") # Chỉ đặt vị trí, không đặt kích thước
+        self.main_settings_window.minsize(popup_w, popup_h) # Ngăn co nhỏ hơn kích thước ban đầu
         
         self.root.wait_window(self.main_settings_window)
 
@@ -1423,16 +1420,16 @@ class AppGUI:
             
         self.settings_window = Toplevel(self.root)
         self.settings_window.title("Cài đặt Nâng cao")
-        # Bỏ geometry cũ
         self.settings_window.transient(self.root)
         self.settings_window.grab_set()
         
-        self.adv_settings_tabs_created = set()
         main_frame = ttk.Frame(self.settings_window)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        main_frame.grid_rowconfigure(0, weight=1)
+        # Hàng 0 (notebook) sẽ co giãn, hàng 1 (nút bấm) thì không
+        main_frame.grid_rowconfigure(0, weight=1) 
         main_frame.grid_columnconfigure(0, weight=1)
         
+        # --- NOTEBOOK (Hàng 0 - SẼ CO GIÃN) ---
         notebook = ttk.Notebook(main_frame)
         notebook.grid(row=0, column=0, sticky="nsew")
         
@@ -1443,19 +1440,21 @@ class AppGUI:
             notebook.add(frame, text=name)
             self.adv_settings_tab_frames[name] = frame
             
-        def on_tab_changed(event):
-            selected_tab_name = notebook.tab(notebook.select(), "text")
-            if selected_tab_name not in self.adv_settings_tabs_created:
-                parent_frame = self.adv_settings_tab_frames[selected_tab_name]
-                if selected_tab_name == "Cảnh báo Mực nước": self._create_water_settings_content(parent_frame)
-                elif selected_tab_name == "GNSS": self._create_gnss_settings_content(parent_frame)
-                elif selected_tab_name == "Chung & Âm thanh": self._create_general_audio_settings_content(parent_frame)
-                self.adv_settings_tabs_created.add(selected_tab_name)
+        def on_tab_changed(event=None):
+            try:
+                selected_tab_name = notebook.tab(notebook.select(), "text")
+                if selected_tab_name not in self.adv_settings_tabs_created:
+                    parent_frame = self.adv_settings_tab_frames[selected_tab_name]
+                    if selected_tab_name == "Cảnh báo Mực nước": self._create_water_settings_content(parent_frame)
+                    elif selected_tab_name == "GNSS": self._create_gnss_settings_content(parent_frame)
+                    elif selected_tab_name == "Chung & Âm thanh": self._create_general_audio_settings_content(parent_frame)
+                    self.adv_settings_tabs_created.add(selected_tab_name)
+            except tk.TclError: pass
                 
         notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
-        # Tự động tạo nội dung cho tab đầu tiên
-        self.root.after(50, lambda: on_tab_changed(None))
+        self.root.after(50, on_tab_changed)
 
+        # --- NÚT BẤM (Hàng 1 - GỐC CỐ ĐỊNH) ---
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=1, column=0, sticky="e", pady=(10, 0))
         
@@ -1464,33 +1463,31 @@ class AppGUI:
             self.settings_window.destroy()
             self.settings_window = None
             
+        ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=5)
         ttk.Button(button_frame, text="Đóng", command=on_close, bootstyle="secondary").pack(side=tk.RIGHT)
-        ttk.Button(button_frame, text="Lưu Cài đặt", command=lambda: self.save_settings_to_file(self.settings_window, 'advanced'), bootstyle="primary").pack(side=tk.RIGHT, padx=10)
         
         self.settings_window.protocol("WM_DELETE_WINDOW", on_close)
 
-        # --- PHẦN CODE MỚI ĐỂ TỰ ĐỘNG FIT VÀ CĂN GIỮA ---
+        # === PHẦN SỬA LỖI: ĐỂ CỬA SỔ TỰ FIT VÀ CĂN GIỮA ===
+        self.settings_window.resizable(True, True)
         self.settings_window.update_idletasks()
 
-        min_width = self.settings_window.winfo_reqwidth()
-        min_height = self.settings_window.winfo_reqheight()
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_w = self.root.winfo_width()
+        main_h = self.root.winfo_height()
+
+        popup_w = self.settings_window.winfo_width()
+        popup_h = self.settings_window.winfo_height()
+
+        x_pos = main_x + (main_w // 2) - (popup_w // 2)
+        y_pos = main_y + (main_h // 2) - (popup_h // 2)
         
-        screen_width = self.settings_window.winfo_screenwidth()
-        screen_height = self.settings_window.winfo_screenheight()
-        
-        width = min(min_width + 100, screen_width - 50) # Cửa sổ này rộng hơn một chút
-        height = min(min_height + 50, screen_height - 100)
-        
-        x_pos = (screen_width // 2) - (width // 2)
-        y_pos = (screen_height // 2) - (height // 2)
-        
-        self.settings_window.geometry(f"{width}x{height}+{x_pos}+{y_pos}")
-        self.settings_window.minsize(min_width, 550) # Giữ chiều cao tối thiểu hợp lý
-        self.settings_window.resizable(True, True)
+        self.settings_window.geometry(f"+{x_pos}+{y_pos}")
+        self.settings_window.minsize(popup_w, popup_h)
 
         self.root.wait_window(self.settings_window)
-    
-    # Các hàm còn lại được copy y nguyên, không thiếu
+
     def _create_water_settings_content(self, parent_frame):
         threshold_frame = ttk.LabelFrame(parent_frame, text="Ngưỡng cảnh báo theo MỨC NƯỚC (Giá trị tuyệt đối - đơn vị mét)", padding=10); threshold_frame.pack(fill=tk.X, pady=10)
         threshold_frame.grid_columnconfigure(1, weight=1)
